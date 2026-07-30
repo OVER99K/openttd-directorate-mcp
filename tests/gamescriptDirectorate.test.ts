@@ -107,6 +107,17 @@ test("Depot access joins the depot mouth to the route instead of duplicating str
   assert.doesNotMatch(program, /access\s*=\s*\[a,\s*front\]/);
 });
 
+test("Station survey uses authoritative producer and acceptor catchment tiles", () => {
+  const survey = readFileSync(join(gameDir, "site_survey.nut"), "utf8");
+  const store = readFileSync(join(gameDir, "plan_store.nut"), "utf8");
+  assert.match(survey, /GSTileList_IndustryProducing\(industry_id, catchment\)/);
+  assert.match(survey, /GSTileList_IndustryAccepting\(industry_id, catchment\)/);
+  assert.match(survey, /catchment_tiles\.HasItem\(D4_ToTile\(tile\.point\)\)/);
+  assert.doesNotMatch(survey, /abs\(tile\.point\.x - industry_location\.x\) \+ abs\(tile\.point\.y - industry_location\.y\)/);
+  assert.match(store, /D4_SurveyStationSites\(plan\.company_id, source_id, "source", template/);
+  assert.match(store, /D4_SurveyStationSites\(plan\.company_id, dest_id, "destination", template/);
+});
+
 test("Planning input rejects tile lists and path inputs", () => {
   const util = readFileSync(join(gameDir, "util.nut"), "utf8");
   const store = readFileSync(join(gameDir, "plan_store.nut"), "utf8");

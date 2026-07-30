@@ -16,11 +16,19 @@ function D4_IndustryLocation(industry_id) {
 	return p;
 }
 
-function D4_SurveyStationSites(company_id, industry_id, blueprint_name, intent, policy) {
+function D4_IndustryCatchmentTiles(industry_id, role, catchment) {
+	if (role == "source") return GSTileList_IndustryProducing(industry_id, catchment);
+	if (role == "destination") return GSTileList_IndustryAccepting(industry_id, catchment);
+	return null;
+}
+
+function D4_SurveyStationSites(company_id, industry_id, role, blueprint_name, intent, policy) {
 	local industry_location = D4_IndustryLocation(industry_id);
 	if (industry_location == null) return { ok = false, error = D4_Error("invalid_industry", industry_id.tostring()) };
 	local spread = D4_StationSpreadLimit();
 	local catchment = D4_StationCatchmentRadius();
+	local catchment_tiles = D4_IndustryCatchmentTiles(industry_id, role, catchment);
+	if (catchment_tiles == null) return { ok = false, error = D4_Error("invalid_industry_role", role) };
 	local candidates = [];
 	local rejected_reasons = {};
 	local rejected_count = 0;
@@ -32,7 +40,7 @@ function D4_SurveyStationSites(company_id, industry_id, blueprint_name, intent, 
 			for (local rotation = 0; rotation < 4; rotation++) {
 				local bp = D4_BuildBlueprint(blueprint_name, rotation, origin, {});
 				if (!bp.ok) continue;
-				local result = D4_EvaluateSite(company_id, industry_id, industry_location, bp, spread, catchment);
+				local result = D4_EvaluateSite(company_id, industry_id, industry_location, bp, spread, catchment_tiles);
 				if (result.ok) {
 					candidates.append({
 						origin = origin,
@@ -67,15 +75,14 @@ function D4_SurveyStationSites(company_id, industry_id, blueprint_name, intent, 
 	return { ok = true, industry_id = industry_id, industry_location = industry_location, candidates = top, rejected = rejected_count + candidates.len() - top.len(), rejected_reasons = rejected_reasons };
 }
 
-function D4_EvaluateSite(company_id, industry_id, industry_location, blueprint, spread, catchment) {
+function D4_EvaluateSite(company_id, industry_id, industry_location, blueprint, spread, catchment_tiles) {
 	local reasons = [];
 	local failures = [];
 	local cost = 0;
 	local covered = false;
 	foreach (tile in blueprint.tiles) {
 		if (tile.kind == "station") {
-			local d = abs(tile.point.x - industry_location.x) + abs(tile.point.y - industry_location.y);
-			if (d <= catchment) covered = true;
+			if (catchment_tiles.HasItem(D4_ToTile(tile.point))) covered = true;
 			/* Rail station commands require a level platform; a buildable slope is
 			 * not an executable station site.  Reject it during survey rather than
 			 * blocking the bridge with repeated failed test commands. */

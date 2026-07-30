@@ -136,7 +136,8 @@ class DirectorateM4Bridge {
 		if (payload.command == "survey_sites") {
 			if (!("params" in payload) || !D4_IsTable(payload.params) || !("industry_id" in payload.params) || !("template" in payload.params)) return { ok = false, error = D4_Error("invalid_survey", "") };
 			local policy = D4_Has(payload.params, "policy") && D4_IsTable(payload.params.policy) ? payload.params.policy : {};
-			return D4_SurveyStationSites(payload.company_id, payload.params.industry_id, payload.params.template, {}, policy);
+			local role = D4_Has(payload.params, "role") ? payload.params.role : "source";
+			return D4_SurveyStationSites(payload.company_id, payload.params.industry_id, role, payload.params.template, {}, policy);
 		}
 		return { ok = false, error = D4_Error("unknown_command", payload.command) };
 	}

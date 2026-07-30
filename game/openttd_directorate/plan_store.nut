@@ -115,10 +115,10 @@ class DirectorateM4PlanStore {
 		local template = D4_StringOr(D4_Has(plan.policy, "station_template") ? plan.policy.station_template : null, "through_hub_4x7", 64);
 		if (plan.phase == "planning") {
 			GSLog.Info("D3 M4 planning source survey " + plan.plan_id);
-			local source_survey = D4_SurveyStationSites(plan.company_id, source_id, template, plan.intent, plan.policy);
+			local source_survey = D4_SurveyStationSites(plan.company_id, source_id, "source", template, plan.intent, plan.policy);
 			if (!source_survey.ok || source_survey.candidates.len() == 0) return { ok = false, error = D4_Error("source_site_not_found", source_id.tostring()), payload = { survey = source_survey } };
 			GSLog.Info("D3 M4 planning destination survey " + plan.plan_id);
-			local dest_survey = D4_SurveyStationSites(plan.company_id, dest_id, template, plan.intent, plan.policy);
+			local dest_survey = D4_SurveyStationSites(plan.company_id, dest_id, "destination", template, plan.intent, plan.policy);
 			if (!dest_survey.ok || dest_survey.candidates.len() == 0) return { ok = false, error = D4_Error("destination_site_not_found", dest_id.tostring()), payload = { survey = dest_survey } };
 			plan.station_survey = { source = source_survey, destination = dest_survey };
 			/* Select orientation geometrically before invoking any yielding
