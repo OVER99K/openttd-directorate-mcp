@@ -98,7 +98,7 @@ function D4_IsNinetyTurn(a, b, c) {
 }
 
 function D4_IsPointOnMap(p) {
-	return D4_IsTable(p) && typeof p.x == "integer" && typeof p.y == "integer" && p.x >= 0 && p.y >= 0 && p.x < GSMap.GetMapSizeX() && p.y < GSMap.GetMapSizeY();
+	return D4_IsTable(p) && D4_Has(p, "x") && D4_Has(p, "y") && typeof p.x == "integer" && typeof p.y == "integer" && p.x >= 0 && p.y >= 0 && p.x < GSMap.GetMapSizeX() && p.y < GSMap.GetMapSizeY();
 }
 
 function D4_ToTile(p) {

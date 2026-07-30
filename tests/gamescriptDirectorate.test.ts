@@ -107,6 +107,25 @@ test("Depot access joins the depot mouth to the route instead of duplicating str
   assert.doesNotMatch(program, /access\s*=\s*\[a,\s*front\]/);
 });
 
+test("Single-shuttle routing uses the real station tiles as endpoint context", () => {
+  const program = readFileSync(join(gameDir, "build_program.nut"), "utf8");
+  const store = readFileSync(join(gameDir, "plan_store.nut"), "utf8");
+  const version = readFileSync(join(gameDir, "version.nut"), "utf8");
+  assert.match(program, /local source_entry = single_shuttle \? source_station\.op\.point : null/);
+  assert.match(program, /local destination_exit = single_shuttle \? destination_station\.op\.point : null/);
+  assert.match(program, /D4_AppendLaneOperations\(ops, "outbound", route\.path, source_entry, destination_exit\)/);
+  assert.match(program, /local prev = i > 0 \? path\[i - 1\] : \(entry_point != null \? entry_point/);
+  assert.match(program, /local next = i \+ 1 < path\.len\(\) \? path\[i \+ 1\] : \(exit_point != null \? exit_point/);
+  assert.match(program, /function D4_UpgradeBuildProgram\(plan\)/);
+  assert.match(program, /first_rail\.prev = source_station\.tile/);
+  assert.match(program, /last_rail\.next = destination_station\.tile/);
+  assert.match(store, /if \(D4_UpgradeBuildProgram\(plan\)\)/);
+  assert.match(version, /DIRECTORATE_M4_BUILD_PROGRAM_VERSION <- 2/);
+  const gate = readFileSync("tests/integration/directorate-real-engine-gate.mjs", "utf8");
+  assert.match(gate, /migration_safety_probe/);
+  assert.match(gate, /malformed v1 migration input was accepted/);
+});
+
 test("Station survey uses authoritative producer and acceptor catchment tiles", () => {
   const survey = readFileSync(join(gameDir, "site_survey.nut"), "utf8");
   const store = readFileSync(join(gameDir, "plan_store.nut"), "utf8");

@@ -14,16 +14,22 @@ function D4_CompileBuildProgram(plan) {
 	if (goal == null) goal = D4_BlueprintPortLocation(plan.destination_blueprint, "throat");
 	if (start == null || goal == null) return { ok = false, error = D4_Error("program_missing_throats", "") };
 
+	local single_shuttle = D4_Has(plan.station_blueprint, "name") && plan.station_blueprint.name == "single_shuttle_1xN";
+	/* The centerline starts on the throat tile, not the station tile.  For a
+	 * shuttle, preserve the actual station tiles as the predecessor/successor
+	 * context in the emitted endpoint primitives.  Apply preflight tests those
+	 * exact primitives before any mutation. */
+	local source_entry = single_shuttle ? source_station.op.point : null;
+	local destination_exit = single_shuttle ? destination_station.op.point : null;
 	local route = D4_BuildLegalCenterline(start, goal, plan.company_id, plan.policy);
 	if (!route.ok) return route;
 	local paired = { ok = true, return_lane = [] };
-	local single_shuttle = D4_Has(plan.station_blueprint, "name") && plan.station_blueprint.name == "single_shuttle_1xN";
 	if (!single_shuttle) {
 		paired = D4_DeriveProgramLanes(route.path);
 		if (!paired.ok) return paired;
 	}
-	if (!D4_AppendLaneOperations(ops, "outbound", route.path)) return { ok = false, error = D4_Error("program_invalid_outbound", "") };
-	if (!single_shuttle && !D4_AppendLaneOperations(ops, "return", paired.return_lane)) return { ok = false, error = D4_Error("program_invalid_return", "") };
+	if (!D4_AppendLaneOperations(ops, "outbound", route.path, source_entry, destination_exit)) return { ok = false, error = D4_Error("program_invalid_outbound", "") };
+	if (!single_shuttle && !D4_AppendLaneOperations(ops, "return", paired.return_lane, null, null)) return { ok = false, error = D4_Error("program_invalid_return", "") };
 
 	local depot = D4_DepotOperation(route.path);
 	if (depot.ok) {
@@ -51,11 +57,45 @@ function D4_CompileBuildProgram(plan) {
 	return {
 		ok = true,
 		version = DIRECTORATE_M4_BUILD_PROGRAM_VERSION,
-		fingerprint = D4_BoundedFingerprint({ source = start, goal = goal, count = ops.len(), path = route.path, ret = paired.return_lane }),
+		fingerprint = D4_BoundedFingerprint({ source = start, goal = goal, source_entry = source_entry, destination_exit = destination_exit, count = ops.len(), path = route.path, ret = paired.return_lane }),
 		ops = ops,
 		path = route.path,
 		return_lane = paired.return_lane,
 	};
+}
+
+/* Upgrade persisted v1 programs without rerunning the bounded A* planner.
+ * Ready single-shuttle plans receive the same endpoint operands emitted by a
+ * fresh v2 compile; terminal plans retain their historical operations. */
+function D4_UpgradeBuildProgram(plan) {
+	if (!D4_IsTable(plan) || !D4_Has(plan, "build_program") || !D4_IsTable(plan.build_program) || !plan.build_program.ok) return false;
+	if (!D4_Has(plan, "revision") || typeof plan.revision != "integer" || plan.revision < 0 || !D4_Has(plan, "state") || typeof plan.state != "string") return false;
+	local program = plan.build_program;
+	if (!D4_Has(program, "version") || program.version != 1 || !D4_Has(program, "ops") || !D4_IsArray(program.ops) || !D4_Has(program, "path") || !D4_IsArray(program.path) || program.path.len() < 2) return false;
+	if (D4_Has(program, "return_lane") && !D4_IsArray(program.return_lane)) return false;
+	if (!D4_IsPointOnMap(program.path[0]) || !D4_IsPointOnMap(program.path[program.path.len() - 1])) return false;
+	local source_entry = null;
+	local destination_exit = null;
+	local single_shuttle = D4_Has(plan, "station_blueprint") && D4_IsTable(plan.station_blueprint) && D4_Has(plan.station_blueprint, "name") && plan.station_blueprint.name == "single_shuttle_1xN";
+	if ((plan.state == "ready" || plan.state == "planning") && single_shuttle) {
+		local last_index = program.path.len() + 1;
+		if (program.path.len() < 2 || program.ops.len() <= last_index) return false;
+		local source_station = program.ops[0];
+		local destination_station = program.ops[1];
+		local first_rail = program.ops[2];
+		local last_rail = program.ops[last_index];
+		if (!D4_IsTable(source_station) || !D4_IsTable(destination_station) || !D4_IsTable(first_rail) || !D4_IsTable(last_rail) || !D4_Has(source_station, "op_id") || !D4_Has(source_station, "tile") || !D4_Has(source_station, "point") || !D4_Has(destination_station, "op_id") || !D4_Has(destination_station, "tile") || !D4_Has(destination_station, "point") || !D4_Has(first_rail, "op_id") || !D4_Has(last_rail, "op_id")) return false;
+		if (source_station.op_id != "source_station" || destination_station.op_id != "destination_station" || first_rail.op_id != "rail.outbound.0" || last_rail.op_id != "rail.outbound." + (program.path.len() - 1).tostring()) return false;
+		source_entry = source_station.point;
+		destination_exit = destination_station.point;
+		first_rail.prev = source_station.tile;
+		first_rail.prev_point = source_entry;
+		last_rail.next = destination_station.tile;
+		last_rail.next_point = destination_exit;
+	}
+	program.version = DIRECTORATE_M4_BUILD_PROGRAM_VERSION;
+	program.fingerprint = D4_BoundedFingerprint({ source = program.path[0], goal = program.path[program.path.len() - 1], source_entry = source_entry, destination_exit = destination_exit, count = program.ops.len(), path = program.path, ret = D4_Has(program, "return_lane") ? program.return_lane : [] });
+	return true;
 }
 
 function D4_SelectBestSitePair(source_candidates, destination_candidates) {
@@ -274,11 +314,11 @@ function D4_DeriveProgramLanes(path) {
 	return { ok = true, return_lane = reverse };
 }
 
-function D4_AppendLaneOperations(ops, prefix, path) {
+function D4_AppendLaneOperations(ops, prefix, path, entry_point, exit_point) {
 	if (!D4_IsArray(path) || path.len() < 2) return false;
 	for (local i = 0; i < path.len(); i++) {
-		local prev = i > 0 ? path[i - 1] : D4_Offset(path[i], D4_RotateDir(D4_DirectionBetween(path[i], path[i + 1]), 2), 1);
-		local next = i + 1 < path.len() ? path[i + 1] : D4_Offset(path[i], D4_DirectionBetween(path[i - 1], path[i]), 1);
+		local prev = i > 0 ? path[i - 1] : (entry_point != null ? entry_point : D4_Offset(path[i], D4_RotateDir(D4_DirectionBetween(path[i], path[i + 1]), 2), 1));
+		local next = i + 1 < path.len() ? path[i + 1] : (exit_point != null ? exit_point : D4_Offset(path[i], D4_DirectionBetween(path[i - 1], path[i]), 1));
 		if (!D4_IsPointOnMap(prev) || !D4_IsPointOnMap(next) || !D4_IsLegalPrimitive(prev, path[i], next)) return false;
 		ops.append({ op_id = "rail." + prefix + "." + i, kind = "rail_connection", tile = D4_ToTile(path[i]), point = path[i], prev = D4_ToTile(prev), prev_point = prev, next = D4_ToTile(next), next_point = next });
 	}
@@ -303,14 +343,17 @@ function D4_ValidateBuildProgram(ops) {
 	local station_count = 0;
 	local seen = {};
 	foreach (op in ops) {
-		if (!D4_IsTable(op) || !D4_Has(op, "kind") || !D4_Has(op, "tile") || typeof op.tile != "integer" || !GSMap.IsValidTile(op.tile)) return { ok = false, error = D4_Error("invalid_program_operation", "") };
-		if (op.kind == "station_rect") station_count++;
+		if (!D4_IsTable(op) || !("kind" in op) || typeof op.kind != "string" || !("op_id" in op) || typeof op.op_id != "string" || op.op_id.len() < 1 || op.op_id.len() > 128 || !("tile" in op) || typeof op.tile != "integer" || !GSMap.IsValidTile(op.tile)) return { ok = false, error = D4_Error("invalid_program_operation", "") };
+		if (op.kind == "station_rect") {
+			if (!("end_tile" in op) || typeof op.end_tile != "integer" || !GSMap.IsValidTile(op.end_tile) || !("direction" in op) || typeof op.direction != "integer" || !("num_platforms" in op) || typeof op.num_platforms != "integer" || op.num_platforms < 1 || !("platform_length" in op) || typeof op.platform_length != "integer" || op.platform_length < 1 || !("destination_station" in op) || typeof op.destination_station != "integer") return { ok = false, error = D4_Error("invalid_station_operation", op.op_id) };
+			station_count++;
+		}
 		else if (op.kind == "rail_connection") {
-			if (!GSMap.IsValidTile(op.prev) || !GSMap.IsValidTile(op.next)) return { ok = false, error = D4_Error("invalid_rail_connection", op.op_id) };
+			if (!("prev" in op) || typeof op.prev != "integer" || !GSMap.IsValidTile(op.prev) || !("next" in op) || typeof op.next != "integer" || !GSMap.IsValidTile(op.next)) return { ok = false, error = D4_Error("invalid_rail_connection", op.op_id) };
 		} else if (op.kind == "depot") {
-			if (!GSMap.IsValidTile(op.front) || op.front == op.tile) return { ok = false, error = D4_Error("invalid_depot_front", op.op_id) };
+			if (!("front" in op) || typeof op.front != "integer" || !GSMap.IsValidTile(op.front) || op.front == op.tile) return { ok = false, error = D4_Error("invalid_depot_front", op.op_id) };
 		} else if (op.kind == "signal") {
-			if (!GSMap.IsValidTile(op.front)) return { ok = false, error = D4_Error("invalid_signal_front", op.op_id) };
+			if (!("front" in op) || typeof op.front != "integer" || !GSMap.IsValidTile(op.front) || !("signal_type" in op) || typeof op.signal_type != "integer") return { ok = false, error = D4_Error("invalid_signal_front", op.op_id) };
 		} else return { ok = false, error = D4_Error("unknown_program_operation", op.kind) };
 		local key = op.kind == "station_rect" ? "station:" + op.tile : op.kind + ":" + op.tile;
 		if (key in seen && op.kind != "rail_connection") return { ok = false, error = D4_Error("program_overlap", key) };

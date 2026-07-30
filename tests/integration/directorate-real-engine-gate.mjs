@@ -59,6 +59,21 @@ function writeConfig() {
   mkdirSync(join(fixture, "baseset"), { recursive: true });
 
   cpSync(join(repoRoot, "game/openttd_directorate"), join(fixture, "game/openttd_directorate"), { recursive: true });
+  const fixtureBridgePath = join(fixture, "game/openttd_directorate/bridge.nut");
+  const fixtureBridge = readFileSync(fixtureBridgePath, "utf8");
+  const migrationProbe = `\t\tif (payload.command == "migration_safety_probe") {
+\t\t\tlocal original = this.store.GetPlan(payload.params.plan_id);
+\t\t\tif (original == null) return { ok = false, error = D4_Error("probe_plan_missing", payload.params.plan_id) };
+\t\t\tlocal empty_path = { revision = 0, state = "ready", station_blueprint = original.station_blueprint, build_program = { ok = true, version = 1, ops = original.build_program.ops, path = [] } };
+\t\t\tlocal malformed_ops = { revision = 0, state = "ready", station_blueprint = original.station_blueprint, build_program = { ok = true, version = 1, ops = [{}], path = original.build_program.path } };
+\t\t\tlocal missing_revision = { state = "ready", station_blueprint = original.station_blueprint, build_program = { ok = true, version = 1, ops = original.build_program.ops, path = original.build_program.path } };
+\t\t\tlocal results = [D4_UpgradeBuildProgram(empty_path), D4_UpgradeBuildProgram(malformed_ops), D4_UpgradeBuildProgram(missing_revision)];
+\t\t\treturn { ok = true, payload = { all_rejected = !results[0] && !results[1] && !results[2], results = results } };
+\t\t}
+`;
+  const fixtureBridgeWithProbe = fixtureBridge.replace('\t\tif (payload.command == "survey_sites") {', migrationProbe + '\t\tif (payload.command == "survey_sites") {');
+  if (fixtureBridgeWithProbe === fixtureBridge) throw new Error("failed to inject migration safety probe");
+  writeFileSync(fixtureBridgePath, fixtureBridgeWithProbe);
   cpSync(openGfx, join(fixture, "baseset"), { recursive: true });
   writeFileSync(
     join(fixture, "ai/directorate_gate_fixture/info.nut"),
@@ -263,6 +278,15 @@ async function main() {
       }
       const revision = plan.payload.revision;
       planRevision = revision;
+
+      const migrationSafetyWire = await client.requestGameScript("execute", {
+        company_id: 0,
+        command: "migration_safety_probe",
+        params: { plan_id: "directorate-gate-plan" },
+      });
+      const migrationSafety = assertOk("migration_safety_probe", migrationSafetyWire.payload);
+      if (migrationSafety.payload?.all_rejected !== true) throw new Error(`malformed v1 migration input was accepted: ${JSON.stringify(migrationSafety)}`);
+      evidence.steps.push({ name: "migration_safety_probe", response: migrationSafetyWire });
 
       evidence.steps.push({
         name: "preflight",
