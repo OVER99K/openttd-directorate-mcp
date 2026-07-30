@@ -1,0 +1,452 @@
+class DirectorateM4RouteRegistry {
+	routes = null;
+	order = null;
+	alerts = null;
+
+	constructor() {
+		this.routes = {};
+		this.order = [];
+		this.alerts = [];
+	}
+
+	function Save() {
+		return { routes = this.routes, order = this.order, alerts = this.alerts };
+	}
+
+	function Load(data) {
+		if (!D4_IsTable(data)) {
+			this.routes = {};
+			this.order = [];
+			this.alerts = [];
+			return;
+		}
+		local loaded = {};
+		local loaded_order = [];
+		if (D4_Has(data, "order") && D4_IsArray(data.order)) {
+			for (local i = 0; i < data.order.len() && loaded_order.len() < DIRECTORATE_M4_MAX_ROUTES; i++) {
+				local id = data.order[i];
+				if (typeof id != "string" || id.len() < 1 || id.len() > 128 || id in loaded || !(id in data.routes)) continue;
+				local route = data.routes[id];
+				if (!this.IsRouteSafe(route)) continue;
+				loaded[id] <- route;
+				loaded_order.append(id);
+			}
+		}
+		this.routes = loaded;
+		this.order = loaded_order;
+		this.alerts = [];
+		if (D4_Has(data, "alerts") && D4_IsArray(data.alerts)) {
+			for (local i = 0; i < data.alerts.len() && this.alerts.len() < 256; i++) {
+				if (D4_IsTable(data.alerts[i])) this.alerts.append(data.alerts[i]);
+			}
+		}
+	}
+
+	function Create(route_id, company_id, plan_id, source_station_tile, destination_station_tile, source_industry_id, destination_industry_id, cargo_type) {
+		if (!D4_IsSafeIdentifier(route_id, 128)) return { ok = false, error = D4_Error("invalid_route_id", "") };
+		if (!D4_IsValidCargoType(cargo_type)) return { ok = false, error = D4_Error("invalid_cargo_type", cargo_type.tostring()) };
+		this.Retention();
+		if (this.order.len() >= DIRECTORATE_M4_MAX_ROUTES) return { ok = false, error = D4_Error("route_capacity", DIRECTORATE_M4_MAX_ROUTES.tostring()) };
+		local existing = route_id in this.routes ? this.routes[route_id] : null;
+		if (existing != null && existing.company_id == company_id && existing.cargo_type == cargo_type && existing.plan_id == plan_id) {
+			return { ok = true, route = existing, note = "idempotent" };
+		}
+		if (existing != null) return { ok = false, error = D4_Error("route_id_conflict", route_id) };
+		local route = {
+			route_id = route_id,
+			company_id = company_id,
+			plan_id = plan_id,
+			cargo_type = cargo_type,
+			cargo_label = D4_SafeCargoLabel(cargo_type),
+			source_station_tile = source_station_tile,
+			destination_station_tile = destination_station_tile,
+			source_industry_id = source_industry_id,
+			destination_industry_id = destination_industry_id,
+			vehicles = [],
+			state = "planned",
+			commissioned_tick = 0,
+			created_tick = D4_Tick(),
+			updated_tick = D4_Tick(),
+			health = {
+				topology_ok = false,
+				orders_ok = false,
+				vehicle_running = false,
+				positive_revenue = false,
+				last_check_tick = 0,
+			},
+			economics = {
+				build_cost = 0,
+				running_cost = 0,
+				last_year_profit = 0,
+				this_year_profit = 0,
+				lifetime_profit = 0,
+			},
+		};
+		this.routes[route_id] <- route;
+		this.order.append(route_id);
+		return { ok = true, route = route };
+	}
+
+	function Get(route_id) {
+		if (route_id in this.routes) return this.routes[route_id];
+		return null;
+	}
+
+	function Observe(request) {
+		local limit = D4_ClampInt(D4_Has(request, "limit") ? request.limit : 64, 64, 1, 256);
+		local rows = [];
+		for (local i = this.order.len() - 1; i >= 0 && rows.len() < limit; i--) {
+			local id = this.order[i];
+			if (!(id in this.routes)) continue;
+			local route = this.routes[id];
+			if (D4_Has(request, "company_id") && route.company_id != request.company_id) continue;
+			rows.append(this.Summary(route));
+		}
+		return { ok = true, payload = { routes = rows, alerts = this.RecentAlerts(limit), tick = D4_Tick() } };
+	}
+
+	function Summary(route) {
+		return {
+			route_id = route.route_id,
+			company_id = route.company_id,
+			plan_id = route.plan_id,
+			state = route.state,
+			cargo_type = route.cargo_type,
+			cargo_label = route.cargo_label,
+			vehicles = route.vehicles.len(),
+			health = route.health,
+			economics = route.economics,
+			created_tick = route.created_tick,
+			updated_tick = route.updated_tick,
+		};
+	}
+
+	function RecentAlerts(limit) {
+		local out = [];
+		for (local i = this.alerts.len() - 1; i >= 0 && out.len() < limit; i--) out.append(this.alerts[i]);
+		return out;
+	}
+
+	function AddAlert(route_id, level, code, detail) {
+		local alert = { route_id = route_id, level = level, code = code, detail = D4_StringOr(detail.tostring(), "", DIRECTORATE_M4_MAX_ERROR_LEN), tick = D4_Tick() };
+		this.alerts.append(alert);
+		if (this.alerts.len() > 256) this.alerts.remove(0);
+		return alert;
+	}
+
+	function IsRouteSafe(route) {
+		if (!D4_IsTable(route)) return false;
+		if (!("route_id" in route) || typeof route.route_id != "string" || route.route_id.len() < 1 || route.route_id.len() > 128) return false;
+		if (!("company_id" in route) || typeof route.company_id != "integer") return false;
+		if (!("plan_id" in route) || typeof route.plan_id != "string" || route.plan_id.len() > 128) return false;
+		if (!("cargo_type" in route) || typeof route.cargo_type != "integer" || route.cargo_type < 0 || route.cargo_type >= DIRECTORATE_M4_MAX_CARGO_TYPES) return false;
+		if (!("vehicles" in route) || !D4_IsArray(route.vehicles) || route.vehicles.len() > DIRECTORATE_M4_MAX_ROUTE_VEHICLES) return false;
+		if (!("state" in route) || typeof route.state != "string" || !D4_IsRouteState(route.state)) return false;
+		if (!("created_tick" in route) || typeof route.created_tick != "integer") route.created_tick <- 0;
+		if (!("updated_tick" in route) || typeof route.updated_tick != "integer") route.updated_tick <- 0;
+		if (!("commissioned_tick" in route) || typeof route.commissioned_tick != "integer") route.commissioned_tick <- 0;
+		if (!("health" in route) || !D4_IsTable(route.health)) route.health <- { topology_ok = false, orders_ok = false, vehicle_running = false, positive_revenue = false, last_check_tick = 0 };
+		if (!("economics" in route) || !D4_IsTable(route.economics)) route.economics <- { build_cost = 0, running_cost = 0, last_year_profit = 0, this_year_profit = 0, lifetime_profit = 0 };
+		local safe_vehicles = [];
+		foreach (v in route.vehicles) {
+			if (D4_IsTable(v) && typeof v.vehicle_id == "integer" && typeof v.created_tick == "integer") safe_vehicles.append(v);
+		}
+		route.vehicles = safe_vehicles;
+		return true;
+	}
+
+	function Retention() {
+		local compact = [];
+		foreach (id in this.order) if (id in this.routes) compact.append(id);
+		this.order = compact;
+		while (this.order.len() >= DIRECTORATE_M4_MAX_ROUTES) {
+			local removed = false;
+			for (local i = 0; i < this.order.len(); i++) {
+				local old = this.order[i];
+				if (!(old in this.routes)) {
+					this.order.remove(i);
+					removed = true;
+					break;
+				}
+				if (this.routes[old].state == "decommissioned") {
+					delete this.routes[old];
+					this.order.remove(i);
+					removed = true;
+					break;
+				}
+			}
+			if (!removed) break;
+		}
+	}
+}
+
+function D4_IsRouteState(state) {
+	return state == "planned" || state == "commissioning" || state == "commissioned" || state == "decommissioned" || state == "failed";
+}
+
+function D4_StationTileFromPlan(plan, which) {
+	if (!D4_IsTable(plan) || !D4_Has(plan, "build_program") || !D4_IsTable(plan.build_program) || !plan.build_program.ok) return null;
+	foreach (op in plan.build_program.ops) {
+		if (op.kind == "station_rect") {
+			if (which == "source" && op.op_id == "source_station") return op.tile;
+			if (which == "destination" && op.op_id == "destination_station") return op.tile;
+		}
+	}
+	return null;
+}
+
+function D4_CargoProducedAtIndustry(industry_id) {
+	if (!GSIndustry.IsValidIndustry(industry_id)) return [];
+	local produced = [];
+	for (local cargo = 0; cargo < DIRECTORATE_M4_MAX_CARGO_TYPES; cargo++) {
+		if (!GSCargo.IsValidCargo(cargo)) continue;
+		if (GSIndustry.GetLastMonthProduction(industry_id, cargo) > 0) produced.append(cargo);
+	}
+	return produced;
+}
+
+function D4_PickRouteCargo(source_industry_id, destination_industry_id, requested_label) {
+	local produced = D4_CargoProducedAtIndustry(source_industry_id);
+	if (produced.len() == 0) return { ok = false, error = D4_Error("no_produced_cargo", source_industry_id.tostring()) };
+	local chosen = produced[0];
+	if (requested_label != null && requested_label != "") {
+		local normalized = requested_label.tolower();
+		foreach (cargo in produced) {
+			local label = GSCargo.GetCargoLabel(cargo);
+			if (label != null && label.tolower() == normalized) { chosen = cargo; break; }
+		}
+	}
+	if (!GSCargo.IsValidCargo(chosen)) return { ok = false, error = D4_Error("invalid_cargo", chosen.tostring()) };
+	if (GSIndustry.IsCargoAccepted(destination_industry_id, chosen) == GSIndustry.CAS_NOT_ACCEPTED) {
+		return { ok = false, error = D4_Error("destination_does_not_accept", GSCargo.GetCargoLabel(chosen)), produced = produced };
+	}
+	return { ok = true, cargo_type = chosen, cargo_label = D4_SafeCargoLabel(chosen), produced = produced };
+}
+
+function D4_AssignVehicleToRoute(route, vehicle_id, build_cost) {
+	if (route.vehicles.len() >= DIRECTORATE_M4_MAX_ROUTE_VEHICLES) return { ok = false, error = D4_Error("vehicle_capacity", route.route_id) };
+	if (!GSVehicle.IsValidVehicle(vehicle_id)) return { ok = false, error = D4_Error("invalid_vehicle", vehicle_id.tostring()) };
+	if (GSVehicle.GetOwner(vehicle_id) != route.company_id) return { ok = false, error = D4_Error("vehicle_company_mismatch", vehicle_id.tostring()) };
+	route.vehicles.append({ vehicle_id = vehicle_id, created_tick = D4_Tick(), build_cost = build_cost });
+	route.economics.build_cost += build_cost;
+	route.updated_tick = D4_Tick();
+	return { ok = true, vehicle_id = vehicle_id };
+}
+
+function D4_CommissionRoute(plan_store, registry, company_id, plan_id, route_id, options) {
+	local plan = plan_store.GetPlan(plan_id);
+	if (plan == null) return { ok = false, error = D4_Error("plan_not_found", plan_id) };
+	if (plan.company_id != company_id) return { ok = false, error = D4_Error("company_mismatch", plan_id) };
+	if (plan.state != "applied") return { ok = false, error = D4_Error("plan_not_applied", plan.state) };
+	local source_tile = D4_StationTileFromPlan(plan, "source");
+	local dest_tile = D4_StationTileFromPlan(plan, "destination");
+	if (source_tile == null || dest_tile == null) return { ok = false, error = D4_Error("missing_station_tiles", plan_id) };
+	if (!GSRail.IsRailStationTile(source_tile) || !GSRail.IsRailStationTile(dest_tile)) return { ok = false, error = D4_Error("stations_not_built", plan_id) };
+	local requested_label = D4_Has(options, "cargo_label") ? options.cargo_label : null;
+	local cargo_pick = D4_PickRouteCargo(plan.intent.source_industry_id, plan.intent.destination_industry_id, requested_label);
+	if (!cargo_pick.ok) return cargo_pick;
+	local existing = registry.Get(route_id);
+	if (existing != null) {
+		if (existing.company_id != company_id || existing.plan_id != plan_id || existing.cargo_type != cargo_pick.cargo_type) {
+			return { ok = false, error = D4_Error("route_id_conflict", route_id) };
+		}
+		if (existing.state != "commissioned") {
+			return { ok = false, error = D4_Error("route_not_commissioned", existing.state), state = existing.state };
+		}
+		return { ok = true, route = registry.Summary(existing), note = "idempotent" };
+	}
+	local created = registry.Create(route_id, company_id, plan_id, source_tile, dest_tile, plan.intent.source_industry_id, plan.intent.destination_industry_id, cargo_pick.cargo_type);
+	if (!created.ok) return created;
+	local route = created.route;
+	route.state = "commissioning";
+	local topology = D4_VerifyRouteTopology(route, company_id);
+	route.health.topology_ok = topology.ok;
+	if (!topology.ok) {
+		route.state = "failed";
+		registry.AddAlert(route_id, "error", "topology_failed", topology.failures.len().tostring());
+		return { ok = false, error = D4_Error("topology_failed", route_id), topology = topology };
+	}
+	local orders = D4_ConfigureRouteOrders(route, company_id, plan_store);
+	if (!orders.ok) {
+		route.state = "failed";
+		registry.AddAlert(route_id, "error", "orders_failed", orders.error.code);
+		return { ok = false, error = orders.error };
+	}
+	route.health.orders_ok = true;
+	local vehicle = D4_BuildRouteVehicle(route, company_id, plan_store);
+	if (!vehicle.ok) {
+		route.state = "failed";
+		registry.AddAlert(route_id, "error", "vehicle_build_failed", vehicle.error.code);
+		return { ok = false, error = vehicle.error };
+	}
+	D4_AssignVehicleToRoute(route, vehicle.vehicle_id, vehicle.build_cost);
+	local mode2 = GSCompanyMode(route.company_id);
+	if (GSCompanyMode.IsValid() && !GSVehicle.StartStopVehicle(vehicle.vehicle_id)) {
+		registry.AddAlert(route_id, "warning", "vehicle_start_failed", vehicle.vehicle_id.tostring());
+	}
+	route.state = "commissioned";
+	route.commissioned_tick = D4_Tick();
+	route.updated_tick = D4_Tick();
+	return { ok = true, route = registry.Summary(route), vehicle_id = vehicle.vehicle_id, cargo_type = cargo_pick.cargo_type };
+}
+
+function D4_VerifyRouteTopology(route, company_id) {
+	local failures = [];
+	if (!GSRail.IsRailStationTile(route.source_station_tile) || GSTile.GetOwner(route.source_station_tile) != company_id) failures.append({ reason = "source_station_missing", tile = route.source_station_tile });
+	if (!GSRail.IsRailStationTile(route.destination_station_tile) || GSTile.GetOwner(route.destination_station_tile) != company_id) failures.append({ reason = "destination_station_missing", tile = route.destination_station_tile });
+	local connected = D4_AreStationsConnectedByRail(route.source_station_tile, route.destination_station_tile, company_id);
+	if (!connected) failures.append({ reason = "stations_not_connected" });
+	return { ok = failures.len() == 0, failures = failures };
+}
+
+function D4_AreStationsConnectedByRail(source_tile, destination_tile, company_id) {
+	if (!GSRail.IsRailStationTile(source_tile) || !GSRail.IsRailStationTile(destination_tile)) return false;
+	local source = D4_FromTile(source_tile);
+	local dest = D4_FromTile(destination_tile);
+	local frontier = [source];
+	local visited = {};
+	visited[D4_PointKey(source)] <- true;
+	local guard = 0;
+	while (frontier.len() > 0 && guard < 2048) {
+		guard++;
+		local current = frontier.remove(0);
+		if (current.x == dest.x && current.y == dest.y) return true;
+		for (local dir = 0; dir < 4; dir++) {
+			local next = D4_Offset(current, dir, 1);
+			if (!D4_IsPointOnMap(next)) continue;
+			local nkey = D4_PointKey(next);
+			if (nkey in visited) continue;
+			local tile = D4_ToTile(next);
+			if (!GSMap.IsValidTile(tile)) continue;
+			if (GSTile.GetOwner(tile) != company_id) continue;
+			if (!GSRail.IsRailTile(tile) && !GSRail.IsRailStationTile(tile) && !GSRail.IsRailDepotTile(tile)) continue;
+			visited[nkey] <- true;
+			frontier.append(next);
+		}
+	}
+	return false;
+}
+
+function D4_FindRouteDepotTile(plan) {
+	if (!D4_IsTable(plan) || !D4_Has(plan, "build_program") || !D4_IsTable(plan.build_program) || !plan.build_program.ok) return null;
+	foreach (op in plan.build_program.ops) {
+		if (op.kind == "depot" && GSMap.IsValidTile(op.tile)) return op.tile;
+	}
+	return null;
+}
+
+function D4_ConfigureRouteOrders(route, company_id, plan_store) {
+	local plan = plan_store.GetPlan(route.plan_id);
+	if (plan == null) return { ok = false, error = D4_Error("plan_not_found", route.route_id) };
+	local depot_tile = D4_FindRouteDepotTile(plan);
+	if (depot_tile == null || !GSRail.IsRailDepotTile(depot_tile) || GSTile.GetOwner(depot_tile) != company_id) return { ok = false, error = D4_Error("depot_missing", route.route_id) };
+	local mode = GSCompanyMode(company_id);
+	if (!GSCompanyMode.IsValid()) return { ok = false, error = D4_Error("invalid_company", company_id.tostring()) };
+	if (!D4_SelectRailType()) return { ok = false, error = D4_Error("rail_type_unavailable", company_id.tostring()) };
+	return { ok = true, depot_tile = depot_tile, source_tile = route.source_station_tile, destination_tile = route.destination_station_tile };
+}
+
+function D4_BuildRouteVehicle(route, company_id, plan_store) {
+	local plan = plan_store.GetPlan(route.plan_id);
+	if (plan == null) return { ok = false, error = D4_Error("plan_not_found", route.route_id) };
+	local orders = D4_ConfigureRouteOrders(route, company_id, plan_store);
+	if (!orders.ok) return { ok = false, error = orders.error };
+	local mode = GSCompanyMode(company_id);
+	if (!GSCompanyMode.IsValid()) return { ok = false, error = D4_Error("invalid_company", company_id.tostring()) };
+	if (!D4_SelectRailType()) return { ok = false, error = D4_Error("rail_type_unavailable", company_id.tostring()) };
+	local rail_type = GSRail.GetCurrentRailType();
+	local engine_id = D4_FindBuildableRailEngine(route.cargo_type, rail_type);
+	if (engine_id == null) return { ok = false, error = D4_Error("no_suitable_engine", route.cargo_type.tostring()) };
+	local vehicle_id = GSVehicle.BuildVehicle(orders.depot_tile, engine_id);
+	if (!GSVehicle.IsValidVehicle(vehicle_id)) return { ok = false, error = D4_Error("vehicle_build_failed", engine_id.tostring()) };
+	local build_cost = GSEngine.GetPrice(engine_id);
+	local wagon_id = null;
+	local wagon_cost = 0;
+	for (local wagon_engine = 0; wagon_engine < 2048; wagon_engine++) {
+		if (!GSEngine.IsValidEngine(wagon_engine)) continue;
+		if (!GSEngine.IsBuildable(wagon_engine)) continue;
+		if (GSEngine.GetVehicleType(wagon_engine) != GSVehicle.VT_RAIL) continue;
+		if (!GSEngine.IsWagon(wagon_engine)) continue;
+		if (!GSEngine.CanRefitCargo(wagon_engine, route.cargo_type)) continue;
+		wagon_id = GSVehicle.BuildVehicle(orders.depot_tile, wagon_engine);
+		if (GSVehicle.IsValidVehicle(wagon_id)) {
+			wagon_cost = GSEngine.GetPrice(wagon_engine);
+			break;
+		}
+	}
+	if (wagon_id != null && GSVehicle.IsValidVehicle(wagon_id)) {
+		GSVehicle.MoveWagon(wagon_id, 0, vehicle_id, 0);
+		if (!GSVehicle.RefitVehicle(wagon_id, route.cargo_type)) {
+			GSVehicle.SellVehicle(wagon_id);
+		}
+	}
+	if (!GSVehicle.RefitVehicle(vehicle_id, route.cargo_type)) {
+		if (!GSVehicle.BuildVehicleWithRefit(orders.depot_tile, engine_id, route.cargo_type)) {
+			GSVehicle.SellVehicle(vehicle_id);
+			if (wagon_id != null) GSVehicle.SellVehicle(wagon_id);
+			return { ok = false, error = D4_Error("refit_failed", route.cargo_type.tostring()) };
+		}
+	}
+	local flags_source = GSOrder.OF_FULL_LOAD;
+	local flags_dest = GSOrder.OF_UNLOAD;
+	if (!GSOrder.AppendOrder(vehicle_id, route.source_station_tile, flags_source)) {
+		GSVehicle.SellVehicle(vehicle_id);
+		return { ok = false, error = D4_Error("append_source_order_failed", vehicle_id.tostring()) };
+	}
+	if (!GSOrder.AppendOrder(vehicle_id, route.destination_station_tile, flags_dest)) {
+		GSVehicle.SellVehicle(vehicle_id);
+		return { ok = false, error = D4_Error("append_destination_order_failed", vehicle_id.tostring()) };
+	}
+	if (!GSOrder.AppendOrder(vehicle_id, orders.depot_tile, GSOrder.OF_SERVICE_IF_NEEDED | GSOrder.OF_NON_STOP_INTERMEDIATE)) {
+		GSOrder.RemoveOrder(vehicle_id, 0);
+		GSVehicle.SellVehicle(vehicle_id);
+		return { ok = false, error = D4_Error("append_depot_order_failed", vehicle_id.tostring()) };
+	}
+	return { ok = true, vehicle_id = vehicle_id, build_cost = build_cost };
+}
+
+function D4_UpdateRouteHealth(route) {
+	local topology = D4_VerifyRouteTopology(route, route.company_id);
+	route.health.topology_ok = topology.ok;
+	local orders_ok = true;
+	foreach (v in route.vehicles) {
+		if (!GSVehicle.IsValidVehicle(v.vehicle_id)) continue;
+		if (GSOrder.GetOrderCount(v.vehicle_id) < 2) { orders_ok = false; break; }
+	}
+	route.health.orders_ok = orders_ok && route.vehicles.len() > 0;
+	local running = false;
+	local profit_total = 0;
+	local last_year = 0;
+	local this_year = 0;
+	foreach (v in route.vehicles) {
+		if (!GSVehicle.IsValidVehicle(v.vehicle_id)) continue;
+		if (GSVehicle.GetState(v.vehicle_id) == GSVehicle.VS_RUNNING || GSVehicle.GetState(v.vehicle_id) == GSVehicle.VS_AT_STATION) running = true;
+		local p_last = GSVehicle.GetProfitLastYear(v.vehicle_id);
+		local p_this = GSVehicle.GetProfitThisYear(v.vehicle_id);
+		last_year += p_last;
+		this_year += p_this;
+		profit_total += p_last + p_this;
+	}
+	route.health.vehicle_running = running;
+	route.health.positive_revenue = profit_total > 0;
+	route.economics.last_year_profit = last_year;
+	route.economics.this_year_profit = this_year;
+	route.economics.lifetime_profit = profit_total;
+	route.health.last_check_tick = D4_Tick();
+	return { topology_ok = topology.ok, orders_ok = route.health.orders_ok, vehicle_running = running, positive_revenue = profit_total > 0 };
+}
+
+function D4_VerifyRoute(registry, route_id, company_id, level) {
+	local route = registry.Get(route_id);
+	if (route == null) return { ok = false, error = D4_Error("route_not_found", route_id) };
+	if (route.company_id != company_id) return { ok = false, error = D4_Error("company_mismatch", route_id) };
+	local health = D4_UpdateRouteHealth(route);
+	if (level == "topology") return { ok = health.topology_ok, health = health };
+	if (level == "commissioning") return { ok = health.topology_ok && health.orders_ok && route.state == "commissioned", health = health };
+	if (level == "economic") {
+		local result = health.topology_ok && health.orders_ok && health.vehicle_running && health.positive_revenue;
+		if (!result && health.positive_revenue == false) registry.AddAlert(route_id, "warning", "not_yet_profitable", "revenue_check_pending");
+		return { ok = result, health = health, economics = route.economics };
+	}
+	return { ok = false, error = D4_Error("invalid_level", level) };
+}

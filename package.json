@@ -1,0 +1,32 @@
+{
+  "name": "openttd-directorate-mcp",
+  "version": "0.1.0",
+  "description": "Clean-room MCP and OpenTTD GameScript control framework for deterministic transport planning.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/OVER99K/openttd-directorate-mcp.git"
+  },
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "npm run clean && tsc -p tsconfig.json",
+    "dev": "tsx --env-file=.env src/index.ts",
+    "start": "node --env-file=.env dist/src/index.js",
+    "test": "npm run build && node --test dist/**/*.test.js",
+    "check": "npm test"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "zod": "3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "20.19.35",
+    "tsx": "4.23.1",
+    "typescript": "5.9.3"
+  },
+  "license": "MIT"
+}
