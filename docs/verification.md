@@ -1,19 +1,39 @@
 # Verification Evidence
 
-Accepted milestone basis: `6eca468e8173eb7e2c7010e7ec4cc3dd3ab6a667`.
-
 ## Release verification workflow
 
-For every public release SHA, run the full real-engine gate and retain its external evidence artifact with the release record.
+Every public release must be verified at the exact commit SHA that will be published.
 
-- `npm run test` validates static typing and deterministic unit/integration fixtures.
-- `tests/integration/directorate-real-engine-gate.mjs` performs the end-to-end OpenTTD gate.
+The accepted release SHA is intentionally not hard-coded in this tracked file: adding a commit SHA to a file inside that same commit would change the SHA. Exact-SHA evidence therefore lives outside the Git tree in the release record, CI artifact, or signed review record.
+
+For each release candidate:
+
+1. Start from a clean checkout of the exact candidate commit.
+2. Run `npm ci --ignore-scripts`.
+3. Run `npm run check` and require the complete test suite to pass.
+4. Run `npm audit --audit-level=high` and require no high-severity findings.
+5. Run `tests/integration/directorate-real-engine-gate.mjs` against OpenTTD 15.3.
+6. Require the engine evidence to report the exact candidate in `source_commit` and `source_dirty: false`.
+7. Require successful typed MCP planning, application, commissioning, topology verification, economic revenue, save/restart persistence, and idempotent replay.
+8. Retain the external JSON evidence artifact with the release record.
+9. Obtain an independent review of that same exact candidate SHA before publishing it.
+
+## Evidence artifact
 
 The real-engine gate writes JSON evidence to either:
 
-- `${OPENTTD_GATE_EVIDENCE_PATH}` when set, or
+- `${OPENTTD_GATE_EVIDENCE_PATH}` when set; or
 - a temporary path under `os.tmpdir()` by default.
 
-## Public release evidence policy
+A valid release record includes at least:
 
-Do not claim final-release proof against the accepted milestone SHA `6eca468`; public release proof must target the final release commit SHA that is actually released.
+- candidate Git SHA;
+- `source_dirty` state;
+- OpenTTD version and binary SHA-256;
+- static test and audit results;
+- typed MCP-to-GameScript gate results;
+- profitable-delivery evidence;
+- save/restart and replay results; and
+- the independent reviewer decision.
+
+Historical milestone evidence is development provenance only. It must never be presented as proof for a later public release.
