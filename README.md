@@ -1,6 +1,7 @@
 # OpenTTD Directorate MCP
 
 Clean-room MCP and OpenTTD GameScript integration for deterministic transport planning and route commissioning.
+Use your LLM Ai agent to play openttd. 
 
 ## Status
 
