@@ -136,16 +136,34 @@ class DirectorateM4OperationJournal {
 		if (!("request_fingerprint" in op) || typeof op.request_fingerprint != "string" || op.request_fingerprint.len() > 64) return false;
 		if (!("state" in op) || !D4_IsOperationState(op.state)) return false;
 		if (!("entries" in op) || !D4_IsArray(op.entries) || op.entries.len() > DIRECTORATE_M4_MAX_OPERATION_ENTRIES) return false;
-		local safe_entries = [];
-		foreach (entry in op.entries) {
-			if (!D4_IsSafeJournalEntry(entry, op.company_id)) return false;
-			safe_entries.append(entry);
+		if (op.state != "failed_partial" && op.state != "rollback_partial") {
+			local safe_entries = [];
+			local map_area = GSMap.GetMapSizeX() * GSMap.GetMapSizeY();
+			foreach (entry in op.entries) {
+				if (!D4_IsSafeJournalEntry(entry, op.company_id, map_area)) return false;
+				safe_entries.append(entry);
+			}
+			op.entries = safe_entries;
 		}
-		op.entries = safe_entries;
 		if (!D4_Has(op, "created_tick") || typeof op.created_tick != "integer") op.created_tick <- 0;
 		if (!D4_Has(op, "completed_tick") || typeof op.completed_tick != "integer") op.completed_tick <- 0;
 		if (!D4_Has(op, "result")) op.result <- null;
 		if (!D4_Has(op, "rollback")) op.rollback <- null;
+		/* Historical commit results duplicated every journal entry in created[];
+		 * compact that replay-only copy before recursive save-value validation. */
+		if (D4_IsTable(op.result) && (op.state == "completed" || op.state == "preflighted" || op.state == "rolled_back")) {
+			local compact_result = {};
+			if (D4_Has(op.result, "ok")) compact_result.ok <- op.result.ok;
+			if (D4_Has(op.result, "operation_id")) compact_result.operation_id <- op.result.operation_id;
+			if (D4_Has(op.result, "state")) compact_result.state <- op.result.state;
+			if (D4_Has(op.result, "cost")) compact_result.cost <- op.result.cost;
+			if (D4_Has(op.result, "mutation")) compact_result.mutation <- op.result.mutation;
+			if (D4_Has(op.result, "reserve")) compact_result.reserve <- op.result.reserve;
+			if (D4_Has(op.result, "note")) compact_result.note <- op.result.note;
+			if (D4_Has(op.result, "topology")) compact_result.topology <- op.result.topology;
+			if (D4_Has(op.result, "remaining")) compact_result.remaining <- op.result.remaining;
+			op.result = compact_result;
+		} else if (op.state == "failed_partial" || op.state == "rollback_partial") op.result = null;
 		if (!D4_IsBoundedSaveValue(op.result) || !D4_IsBoundedSaveValue(op.rollback)) return false;
 		return true;
 	}
@@ -359,8 +377,10 @@ function D4_RollbackOperation(journal, op) {
 	local mode = GSCompanyMode(op.company_id);
 	if (!GSCompanyMode.IsValid()) return { ok = false, error = D4_Error("invalid_company", op.company_id.tostring()), operation_id = op.operation_id };
 	local remaining = [];
+	local map_area = GSMap.GetMapSizeX() * GSMap.GetMapSizeY();
 	for (local i = op.entries.len() - 1; i >= 0; i--) {
 		local entry = op.entries[i];
+		if (!D4_IsSafeJournalEntry(entry, op.company_id, map_area)) { remaining.append({ kind = "malformed", tile = -1 }); continue; }
 		if (entry.kind != "created") continue;
 		if (typeof entry.tile != "integer") continue;
 		local tile = entry.tile;
@@ -410,25 +430,27 @@ function D4_IsSafeIdentifier(id, max_len) {
 	return true;
 }
 
-function D4_IsSafeJournalEntry(entry, company_id) {
+function D4_IsSafeJournalEntry(entry, company_id, map_area = null) {
 	if (!D4_IsTable(entry)) return false;
+	if (map_area == null) map_area = GSMap.GetMapSizeX() * GSMap.GetMapSizeY();
 	if (!("kind" in entry) || typeof entry.kind != "string") return false;
-	if (!("tile" in entry) || typeof entry.tile != "integer" || !GSMap.IsValidTile(entry.tile)) return false;
+	if (!("tile" in entry) || typeof entry.tile != "integer" || entry.tile < 0 || entry.tile >= map_area) return false;
 	if (!("detail" in entry) || !D4_IsTable(entry.detail)) return false;
-	if (!D4_IsSafeJournalDetail(entry.detail)) return false;
+	if (!D4_IsSafeJournalDetail(entry.detail, map_area)) return false;
 	if (D4_Has(entry, "tick") && typeof entry.tick != "integer") return false;
 	return true;
 }
 
-function D4_IsSafeJournalDetail(detail) {
+function D4_IsSafeJournalDetail(detail, map_area = null) {
+	if (map_area == null) map_area = GSMap.GetMapSizeX() * GSMap.GetMapSizeY();
 	if (!("kind" in detail) || typeof detail.kind != "string") return false;
 	if (detail.kind != "station" && detail.kind != "depot" && detail.kind != "rail" && detail.kind != "signal") return false;
 	if (D4_Has(detail, "phase") && typeof detail.phase != "string") return false;
-	if (D4_Has(detail, "front") && (typeof detail.front != "integer" || !GSMap.IsValidTile(detail.front))) return false;
-	if (D4_Has(detail, "station_end") && (typeof detail.station_end != "integer" || !GSMap.IsValidTile(detail.station_end))) return false;
+	if (D4_Has(detail, "front") && (typeof detail.front != "integer" || detail.front < 0 || detail.front >= map_area)) return false;
+	if (D4_Has(detail, "station_end") && (typeof detail.station_end != "integer" || detail.station_end < 0 || detail.station_end >= map_area)) return false;
 	if (D4_Has(detail, "track") && typeof detail.track != "integer") return false;
-	if (D4_Has(detail, "prev") && (typeof detail.prev != "integer" || !GSMap.IsValidTile(detail.prev))) return false;
-	if (D4_Has(detail, "next") && (typeof detail.next != "integer" || !GSMap.IsValidTile(detail.next))) return false;
+	if (D4_Has(detail, "prev") && (typeof detail.prev != "integer" || detail.prev < 0 || detail.prev >= map_area)) return false;
+	if (D4_Has(detail, "next") && (typeof detail.next != "integer" || detail.next < 0 || detail.next >= map_area)) return false;
 	if (D4_Has(detail, "signal_type") && typeof detail.signal_type != "integer") return false;
 	if (D4_Has(detail, "dir") && typeof detail.dir != "integer") return false;
 	return true;

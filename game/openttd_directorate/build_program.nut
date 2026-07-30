@@ -93,8 +93,12 @@ function D4_UpgradeBuildProgram(plan) {
 		last_rail.next = destination_station.tile;
 		last_rail.next_point = destination_exit;
 	}
+	local previous_fingerprint = D4_Has(program, "fingerprint") && typeof program.fingerprint == "string" ? program.fingerprint : "v1";
 	program.version = DIRECTORATE_M4_BUILD_PROGRAM_VERSION;
-	program.fingerprint = D4_BoundedFingerprint({ source = program.path[0], goal = program.path[program.path.len() - 1], source_entry = source_entry, destination_exit = destination_exit, count = program.ops.len(), path = program.path, ret = D4_Has(program, "return_lane") ? program.return_lane : [] });
+	/* Load() has a strict instruction budget. Revision fencing plus the prior
+	 * fingerprint and rewritten endpoint operands identify this migration
+	 * without recursively hashing the persisted path/return lane again. */
+	program.fingerprint = D4_BoundedFingerprint({ previous = previous_fingerprint, version = DIRECTORATE_M4_BUILD_PROGRAM_VERSION, source = program.path[0], goal = program.path[program.path.len() - 1], source_entry = source_entry, destination_exit = destination_exit, count = program.ops.len() });
 	return true;
 }
 
@@ -342,18 +346,19 @@ function D4_ValidateBuildProgram(ops) {
 	if (!D4_IsArray(ops) || ops.len() < 1 || ops.len() > DIRECTORATE_M4_MAX_OPERATION_ENTRIES) return { ok = false, error = D4_Error("invalid_program_size", "") };
 	local station_count = 0;
 	local seen = {};
+	local map_area = GSMap.GetMapSizeX() * GSMap.GetMapSizeY();
 	foreach (op in ops) {
-		if (!D4_IsTable(op) || !("kind" in op) || typeof op.kind != "string" || !("op_id" in op) || typeof op.op_id != "string" || op.op_id.len() < 1 || op.op_id.len() > 128 || !("tile" in op) || typeof op.tile != "integer" || !GSMap.IsValidTile(op.tile)) return { ok = false, error = D4_Error("invalid_program_operation", "") };
+		if (!D4_IsTable(op) || !("kind" in op) || typeof op.kind != "string" || !("op_id" in op) || typeof op.op_id != "string" || op.op_id.len() < 1 || op.op_id.len() > 128 || !("tile" in op) || typeof op.tile != "integer" || op.tile < 0 || op.tile >= map_area) return { ok = false, error = D4_Error("invalid_program_operation", "") };
 		if (op.kind == "station_rect") {
-			if (!("end_tile" in op) || typeof op.end_tile != "integer" || !GSMap.IsValidTile(op.end_tile) || !("direction" in op) || typeof op.direction != "integer" || !("num_platforms" in op) || typeof op.num_platforms != "integer" || op.num_platforms < 1 || !("platform_length" in op) || typeof op.platform_length != "integer" || op.platform_length < 1 || !("destination_station" in op) || typeof op.destination_station != "integer") return { ok = false, error = D4_Error("invalid_station_operation", op.op_id) };
+			if (!("end_tile" in op) || typeof op.end_tile != "integer" || op.end_tile < 0 || op.end_tile >= map_area || !("direction" in op) || typeof op.direction != "integer" || !("num_platforms" in op) || typeof op.num_platforms != "integer" || op.num_platforms < 1 || !("platform_length" in op) || typeof op.platform_length != "integer" || op.platform_length < 1 || !("destination_station" in op) || typeof op.destination_station != "integer") return { ok = false, error = D4_Error("invalid_station_operation", op.op_id) };
 			station_count++;
 		}
 		else if (op.kind == "rail_connection") {
-			if (!("prev" in op) || typeof op.prev != "integer" || !GSMap.IsValidTile(op.prev) || !("next" in op) || typeof op.next != "integer" || !GSMap.IsValidTile(op.next)) return { ok = false, error = D4_Error("invalid_rail_connection", op.op_id) };
+			if (!("prev" in op) || typeof op.prev != "integer" || op.prev < 0 || op.prev >= map_area || !("next" in op) || typeof op.next != "integer" || op.next < 0 || op.next >= map_area) return { ok = false, error = D4_Error("invalid_rail_connection", op.op_id) };
 		} else if (op.kind == "depot") {
-			if (!("front" in op) || typeof op.front != "integer" || !GSMap.IsValidTile(op.front) || op.front == op.tile) return { ok = false, error = D4_Error("invalid_depot_front", op.op_id) };
+			if (!("front" in op) || typeof op.front != "integer" || op.front < 0 || op.front >= map_area || op.front == op.tile) return { ok = false, error = D4_Error("invalid_depot_front", op.op_id) };
 		} else if (op.kind == "signal") {
-			if (!("front" in op) || typeof op.front != "integer" || !GSMap.IsValidTile(op.front) || !("signal_type" in op) || typeof op.signal_type != "integer") return { ok = false, error = D4_Error("invalid_signal_front", op.op_id) };
+			if (!("front" in op) || typeof op.front != "integer" || op.front < 0 || op.front >= map_area || !("signal_type" in op) || typeof op.signal_type != "integer") return { ok = false, error = D4_Error("invalid_signal_front", op.op_id) };
 		} else return { ok = false, error = D4_Error("unknown_program_operation", op.kind) };
 		local key = op.kind == "station_rect" ? "station:" + op.tile : op.kind + ":" + op.tile;
 		if (key in seen && op.kind != "rail_connection") return { ok = false, error = D4_Error("program_overlap", key) };

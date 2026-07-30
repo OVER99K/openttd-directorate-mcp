@@ -68,8 +68,22 @@ function writeConfig() {
 \t\t\tlocal malformed_ops = { revision = 0, state = "ready", station_blueprint = original.station_blueprint, build_program = { ok = true, version = 1, ops = [{}], path = original.build_program.path } };
 \t\t\tlocal missing_revision = { state = "ready", station_blueprint = original.station_blueprint, build_program = { ok = true, version = 1, ops = original.build_program.ops, path = original.build_program.path } };
 \t\t\tlocal results = [D4_UpgradeBuildProgram(empty_path), D4_UpgradeBuildProgram(malformed_ops), D4_UpgradeBuildProgram(missing_revision)];
-\t\t\treturn { ok = true, payload = { all_rejected = !results[0] && !results[1] && !results[2], results = results } };
-\t\t}
+return { ok = true, payload = { all_rejected = !results[0] && !results[1] && !results[2], results = results } };
+}
+if (payload.command == "load_budget_probe_seed") {
+local source_op = this.store.journal.Get("directorate-gate.commit");
+if (source_op == null || source_op.entries.len() < 1) return { ok = false, error = { code = "probe_source_missing", detail = "completed operation journal missing" } };
+local entries = [];
+for (local i = 0; i < 111; i++) entries.append(source_op.entries[i % source_op.entries.len()]);
+local ids = ["directorate-gate.partial-a", "directorate-gate.partial-b"];
+local states = ["failed_partial", "rollback_partial"];
+for (local i = 0; i < ids.len(); i++) {
+	local op = { operation_id = ids[i], company_id = 0, plan_id = "directorate-gate-plan", revision = 4, phase = "commit", request_fingerprint = "load-budget-probe", state = states[i], entries = entries, created_tick = D4_Tick(), completed_tick = D4_Tick(), result = null, rollback = null };
+	this.store.journal.operations[ids[i]] <- op;
+	this.store.journal.order.append(ids[i]);
+}
+return { ok = true, payload = { seeded = ids.len(), entries_each = entries.len() } };
+}
 `;
   const fixtureBridgeWithProbe = fixtureBridge.replace('\t\tif (payload.command == "survey_sites") {', migrationProbe + '\t\tif (payload.command == "survey_sites") {');
   if (fixtureBridgeWithProbe === fixtureBridge) throw new Error("failed to inject migration safety probe");
@@ -369,6 +383,11 @@ async function main() {
       const verifyEconomicAfter = assertOk("verify_economic_after_travel", await request(handlers, "verify", { company_id: 0, route_id: "directorate-gate-route", level: "economic" }));
       if (verifyEconomicAfter.payload?.health?.vehicle_running !== true) throw new Error(`vehicle not running after travel: ${JSON.stringify(verifyEconomicAfter)}`);
       evidence.steps.push({ name: "verify_economic_after_travel", response: verifyEconomicAfter });
+
+	  const loadBudgetWire = await client.requestGameScript("execute", { company_id: 0, command: "load_budget_probe_seed", params: {} });
+	  const loadBudget = assertOk("load_budget_probe_seed", loadBudgetWire.payload);
+	  if (loadBudget.payload?.seeded !== 2 || loadBudget.payload?.entries_each !== 111) throw new Error("load budget probe did not seed two 111-entry partial operations");
+	  evidence.steps.push({ name: "load_budget_probe_seed", response: loadBudgetWire });
 
       evidence.steps.push({ name: "save", response: await client.rcon("save directorate_gate") });
       await client.shutdown();

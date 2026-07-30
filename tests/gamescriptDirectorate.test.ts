@@ -123,7 +123,9 @@ test("Single-shuttle routing uses the real station tiles as endpoint context", (
   assert.match(version, /DIRECTORATE_M4_BUILD_PROGRAM_VERSION <- 2/);
   const gate = readFileSync("tests/integration/directorate-real-engine-gate.mjs", "utf8");
   assert.match(gate, /migration_safety_probe/);
-  assert.match(gate, /malformed v1 migration input was accepted/);
+  assert.match(gate, /all_rejected/);
+  assert.match(gate, /load_budget_probe_seed/);
+  assert.match(gate, /entries_each !== 111/);
 });
 
 test("Station survey uses authoritative producer and acceptor catchment tiles", () => {
