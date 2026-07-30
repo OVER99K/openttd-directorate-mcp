@@ -23,9 +23,13 @@ class OpenTTDDirectorate extends GSController {
 function OpenTTDDirectorate::Start() {
 	if (this.store == null) this.store = DirectorateM4PlanStore();
 	if (this.bridge == null) this.bridge = DirectorateM4Bridge(this.store);
-	while (true) {
-		this.bridge.Poll();
+	while (this.store.HasDeferredOperations()) {
 		this.store.Tick();
+		GSController.Sleep(1);
+	}
+	while (true) {
+		this.store.Tick();
+		this.bridge.Poll();
 		GSController.Sleep(1);
 	}
 }

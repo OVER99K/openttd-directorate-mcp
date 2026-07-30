@@ -54,6 +54,9 @@ test("Commissioning workflow exercises topology, orders, vehicle, and verify lev
   assert.match(registry, /guard\s*<\s*2048/);
   assert.match(registry, /function D4_ConfigureRouteOrders\(/);
   assert.match(registry, /function D4_BuildRouteVehicle\(/);
+  assert.match(registry, /function D4_EnsureCommissionFunds\(/);
+  assert.match(registry, /GSCompany\.SetLoanAmount\(target\)/);
+  assert.match(registry, /target > maximum_loan/);
   assert.match(registry, /function D4_UpdateRouteHealth\(/);
   assert.match(registry, /function D4_VerifyRoute\(/);
   assert.match(registry, /level == "topology"/);
@@ -63,6 +66,24 @@ test("Commissioning workflow exercises topology, orders, vehicle, and verify lev
   const idempotentSuccess = registry.indexOf('note = "idempotent"', failedReplayGuard);
   assert.ok(failedReplayGuard >= 0, "commission replay must reject non-commissioned routes");
   assert.ok(idempotentSuccess > failedReplayGuard, "idempotent success must occur only after the commissioned-state guard");
+});
+
+test("Journal load defers every recoverable partial mutation without dropping rollback state", () => {
+  const journal = readFileSync(join(gameDir, "operation_journal.nut"), "utf8");
+  const store = readFileSync(join(gameDir, "plan_store.nut"), "utf8");
+  const main = readFileSync(join(gameDir, "main.nut"), "utf8");
+  assert.match(journal, /deferred_operations/);
+  assert.match(journal, /function HydrateOne\(\)/);
+  assert.match(journal, /function HydrateById\(id\)/);
+  assert.match(journal, /if \(id in this\.deferred_operations\) this\.HydrateById\(id\)/);
+  assert.match(journal, /this\.order\.len\(\) \+ this\.deferred_order\.len\(\) >= DIRECTORATE_M4_MAX_OPERATIONS/);
+  assert.match(journal, /this\.deferred_order\.pop\(\)/);
+  assert.match(journal, /function NormalizeSettledRollback\(/);
+  assert.match(journal, /if \(remaining\.len\(\) == 0\) op\.entries = \[\]/);
+  assert.match(journal, /D4_IsSafeJournalEntry\(entry, op\.company_id, map_area\)/);
+  assert.match(store, /this\.journal\.HydrateOne\(\)/);
+  assert.match(main, /while \(this\.store\.HasDeferredOperations\(\)\)/);
+  assert.ok(main.indexOf("this.store.Tick();", main.indexOf("while (true)")) < main.indexOf("this.bridge.Poll();", main.indexOf("while (true)")));
 });
 
 test("Plan store owns the route registry and exposes observe/verify routes", () => {

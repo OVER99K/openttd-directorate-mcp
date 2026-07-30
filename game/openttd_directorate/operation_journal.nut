@@ -1,40 +1,92 @@
 class DirectorateM4OperationJournal {
 	operations = null;
 	order = null;
+	deferred_operations = null;
+	deferred_order = null;
 
 	constructor() {
 		this.operations = {};
 		this.order = [];
+		this.deferred_operations = {};
+		this.deferred_order = [];
 	}
 
 	function Save() {
-		return { operations = this.operations, order = this.order };
+		if (this.deferred_order.len() == 0) return { operations = this.operations, order = this.order };
+		local saved_operations = {};
+		local saved_order = [];
+		foreach (id in this.order) { if (id in this.operations) { saved_operations[id] <- this.operations[id]; saved_order.append(id); } }
+		foreach (id in this.deferred_order) { if (id in this.deferred_operations) { saved_operations[id] <- this.deferred_operations[id]; saved_order.append(id); } }
+		return { operations = saved_operations, order = saved_order };
 	}
 
 	function Load(data) {
 		if (!D4_IsTable(data) || !("operations" in data) || !D4_IsTable(data.operations)) {
 			this.operations = {};
 			this.order = [];
+			this.deferred_operations = {};
+			this.deferred_order = [];
 			return;
 		}
 		this.operations = {};
 		this.order = [];
-		local source_order = D4_Has(data, "order") && D4_IsArray(data.order) ? data.order : null;
-		if (source_order != null) {
-			for (local i = 0; i < source_order.len() && this.order.len() < DIRECTORATE_M4_MAX_OPERATIONS; i++) {
-				this.LoadOne(source_order[i], data.operations);
-			}
-		} else {
-			foreach (id, op in data.operations) {
-				if (this.order.len() >= DIRECTORATE_M4_MAX_OPERATIONS) break;
-				this.LoadOne(id, data.operations);
-			}
+		/* Load() has a very small instruction budget. Keep the bounded raw
+		 * envelope by reference and validate one operation per game tick before
+		 * the bridge accepts requests. */
+		if (!D4_Has(data, "order") || !D4_IsArray(data.order) || data.order.len() > DIRECTORATE_M4_MAX_OPERATIONS) {
+			this.deferred_operations = {};
+			this.deferred_order = [];
+			return;
 		}
+		this.deferred_operations = data.operations;
+		this.deferred_order = data.order;
 	}
 
-	function LoadOne(id, operations_table) {
-		if (!D4_IsValidOperationId(id) || id in this.operations || !(id in operations_table)) return;
-		local op = operations_table[id];
+	function NormalizeSettledRollback(id, op) {
+		if (!D4_IsTable(op) || !D4_Has(op, "state") || (op.state != "failed_partial" && op.state != "rollback_partial")) return false;
+		if (!D4_Has(op, "rollback") || !D4_IsTable(op.rollback) || !D4_Has(op.rollback, "remaining") || !D4_IsArray(op.rollback.remaining) || op.rollback.remaining.len() != 0) return false;
+		op.state = "rolled_back";
+		op.entries = [];
+		op.result = { ok = true, operation_id = id, state = "rolled_back", remaining = [] };
+		if (!this.IsPersistedOperationSafe(id, op)) return true;
+		this.operations[id] <- op;
+		this.order.append(id);
+		return true;
+	}
+
+	function IsDeferredPartialEnvelope(id, op) {
+		if (!D4_IsTable(op) || !D4_Has(op, "operation_id") || op.operation_id != id) return false;
+		if (!D4_Has(op, "state") || (op.state != "failed_partial" && op.state != "rollback_partial")) return false;
+		return D4_Has(op, "entries") && D4_IsArray(op.entries) && op.entries.len() <= DIRECTORATE_M4_MAX_OPERATION_ENTRIES;
+	}
+
+	function HydrateOne() {
+		if (this.deferred_order.len() == 0) return;
+		local id = this.deferred_order.pop();
+		if (!(id in this.deferred_operations)) return;
+		local op = this.deferred_operations[id];
+		delete this.deferred_operations[id];
+		if (id in this.operations) return;
+		if (!D4_IsValidOperationId(id)) return;
+		if (this.NormalizeSettledRollback(id, op)) return;
+		if (!this.IsPersistedOperationSafe(id, op)) return;
+		this.operations[id] <- op;
+		this.order.append(id);
+	}
+
+	function HasDeferred() {
+		return this.deferred_order.len() > 0;
+	}
+
+	function HydrateById(id) {
+		if (!(id in this.deferred_operations)) return;
+		local op = this.deferred_operations[id];
+		delete this.deferred_operations[id];
+		for (local i = 0; i < this.deferred_order.len(); i++) {
+			if (this.deferred_order[i] == id) { this.deferred_order.remove(i); break; }
+		}
+		if (id in this.operations || !D4_IsValidOperationId(id)) return;
+		if (this.NormalizeSettledRollback(id, op)) return;
 		if (!this.IsPersistedOperationSafe(id, op)) return;
 		this.operations[id] <- op;
 		this.order.append(id);
@@ -43,7 +95,7 @@ class DirectorateM4OperationJournal {
 	function Create(operation_id, company_id, plan_id, revision, phase, request_fingerprint) {
 		if (!D4_IsValidOperationId(operation_id)) return null;
 		this.Retention();
-		if (this.order.len() >= DIRECTORATE_M4_MAX_OPERATIONS) return null;
+		if (this.order.len() + this.deferred_order.len() >= DIRECTORATE_M4_MAX_OPERATIONS) return null;
 		local op = {
 			operation_id = operation_id,
 			company_id = company_id,
@@ -64,6 +116,7 @@ class DirectorateM4OperationJournal {
 	}
 
 	function Get(id) {
+		if (id in this.deferred_operations) this.HydrateById(id);
 		if (id in this.operations) return this.operations[id];
 		return null;
 	}
@@ -98,6 +151,7 @@ class DirectorateM4OperationJournal {
 		op.completed_tick = D4_Tick();
 		op.rollback = { remaining = remaining, tick = D4_Tick() };
 		op.result = { ok = remaining.len() == 0, operation_id = op.operation_id, state = op.state, remaining = remaining };
+		if (remaining.len() == 0) op.entries = [];
 	}
 
 	function ValidateReuse(op, company_id, plan_id, revision, phase, request_fingerprint) {
@@ -172,7 +226,7 @@ class DirectorateM4OperationJournal {
 		local compact = [];
 		foreach (id in this.order) if (id in this.operations) compact.append(id);
 		this.order = compact;
-		while (this.order.len() >= DIRECTORATE_M4_MAX_OPERATIONS) {
+		while (this.order.len() + this.deferred_order.len() >= DIRECTORATE_M4_MAX_OPERATIONS) {
 			local removed = false;
 			for (local i = 0; i < this.order.len(); i++) {
 				local old = this.order[i];
@@ -329,24 +383,21 @@ function D4_CommitOperation(plan, store, journal, company_id, reserve, op) {
 		if (!D4_CanAfford(company_id, reserve, total_cost)) {
 			journal.Record(op, "finance_failure", program_op.tile, { cost = total_cost, reserve = reserve });
 			local rollback_result = D4_RollbackOperation(journal, op);
-			local failed = { ok = false, error = D4_Error("insufficient_funds", program_op.op_id), operation_id = op.operation_id, state = "failed_partial", failed_op = program_op.op_id, rollback = rollback_result, remaining = rollback_result.remaining };
-			journal.MarkFailedPartial(op, failed);
+			local failed = { ok = false, error = D4_Error("insufficient_funds", program_op.op_id), operation_id = op.operation_id, state = op.state, failed_op = program_op.op_id, rollback = rollback_result, remaining = rollback_result.remaining };
 			return failed;
 		}
 		local built = D4_ExecuteProgramOperation(program_op, company_id, false);
 		if (!built.ok) {
 			journal.Record(op, "build_failure", program_op.tile, built.failure);
 			local rollback_result2 = D4_RollbackOperation(journal, op);
-			local failed2 = { ok = false, error = D4_Error("build_failed", program_op.op_id), operation_id = op.operation_id, state = "failed_partial", failed_op = program_op.op_id, failure = built.failure, rollback = rollback_result2, remaining = rollback_result2.remaining };
-			journal.MarkFailedPartial(op, failed2);
+			local failed2 = { ok = false, error = D4_Error("build_failed", program_op.op_id), operation_id = op.operation_id, state = op.state, failed_op = program_op.op_id, failure = built.failure, rollback = rollback_result2, remaining = rollback_result2.remaining };
 			return failed2;
 		}
 		total_cost += built.cost;
 		local entry_kind = built.reused ? "reused" : "created";
 		if (!journal.Record(op, entry_kind, program_op.tile, built.detail)) {
 			local rollback_result3 = D4_RollbackOperation(journal, op);
-			local failed3 = { ok = false, error = D4_Error("journal_capacity", program_op.op_id), operation_id = op.operation_id, state = "failed_partial", failed_op = program_op.op_id, rollback = rollback_result3, remaining = rollback_result3.remaining };
-			journal.MarkFailedPartial(op, failed3);
+			local failed3 = { ok = false, error = D4_Error("journal_capacity", program_op.op_id), operation_id = op.operation_id, state = op.state, failed_op = program_op.op_id, rollback = rollback_result3, remaining = rollback_result3.remaining };
 			return failed3;
 		}
 		local item = { kind = built.detail.kind, tile = program_op.tile, op_id = program_op.op_id, detail = built.detail };
@@ -355,8 +406,7 @@ function D4_CommitOperation(plan, store, journal, company_id, reserve, op) {
 	local verified = D4_VerifyProgramTopology(plan.build_program, company_id);
 	if (!verified.ok) {
 		local rollback_result4 = D4_RollbackOperation(journal, op);
-		local failed4 = { ok = false, error = D4_Error("topology_verify_failed", plan.plan_id), operation_id = op.operation_id, state = "failed_partial", verification = verified, rollback = rollback_result4, remaining = rollback_result4.remaining };
-		journal.MarkFailedPartial(op, failed4);
+		local failed4 = { ok = false, error = D4_Error("topology_verify_failed", plan.plan_id), operation_id = op.operation_id, state = op.state, verification = verified, rollback = rollback_result4, remaining = rollback_result4.remaining };
 		return failed4;
 	}
 	local done = {

@@ -54,7 +54,12 @@ class DirectorateM4PlanStore {
 	}
 
 	function Tick() {
+		this.journal.HydrateOne();
 		this.Retention();
+	}
+
+	function HasDeferredOperations() {
+		return this.journal.HasDeferred();
 	}
 
 	function CreateOrAdvance(company_id, intent, policy, requested_id, revision) {

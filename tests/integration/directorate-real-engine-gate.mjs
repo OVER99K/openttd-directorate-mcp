@@ -74,7 +74,10 @@ if (payload.command == "load_budget_probe_seed") {
 local source_op = this.store.journal.Get("directorate-gate.commit");
 if (source_op == null || source_op.entries.len() < 1) return { ok = false, error = { code = "probe_source_missing", detail = "completed operation journal missing" } };
 local entries = [];
-for (local i = 0; i < 111; i++) entries.append(source_op.entries[i % source_op.entries.len()]);
+for (local i = 0; i < 111; i++) {
+	local source_entry = source_op.entries[i % source_op.entries.len()];
+	entries.append({ kind = "reused", tile = source_entry.tile, detail = source_entry.detail, tick = source_entry.tick });
+}
 local ids = ["directorate-gate.partial-a", "directorate-gate.partial-b"];
 local states = ["failed_partial", "rollback_partial"];
 for (local i = 0; i < ids.len(); i++) {
@@ -83,6 +86,25 @@ for (local i = 0; i < ids.len(); i++) {
 	this.store.journal.order.append(ids[i]);
 }
 return { ok = true, payload = { seeded = ids.len(), entries_each = entries.len() } };
+}
+if (payload.command == "load_budget_probe_status") {
+	local first = this.store.journal.Get("directorate-gate.partial-a");
+	local second = this.store.journal.Get("directorate-gate.partial-b");
+	return { ok = true, payload = { all_retained = first != null && second != null, first_entries = first == null ? -1 : first.entries.len(), second_entries = second == null ? -1 : second.entries.len(), active_count = this.store.journal.order.len(), deferred_count = this.store.journal.deferred_order.len() } };
+}
+if (payload.command == "capacity_probe_fill") {
+	local source = this.store.journal.Get("directorate-gate.partial-a");
+	if (source == null || source.entries.len() == 0) return { ok = false, error = D4_Error("capacity_probe_source_missing", "") };
+	local entry = source.entries[0];
+	local index = 0;
+	while (this.store.journal.order.len() < DIRECTORATE_M4_MAX_OPERATIONS) {
+		local id = "directorate-gate.capacity-" + index.tostring();
+		index++;
+		if (id in this.store.journal.operations) continue;
+		this.store.journal.operations[id] <- { operation_id = id, company_id = 0, plan_id = "directorate-gate-plan", revision = 4, phase = "commit", request_fingerprint = "capacity-probe", state = "failed_partial", entries = [entry], created_tick = D4_Tick(), completed_tick = D4_Tick(), result = null, rollback = null };
+		this.store.journal.order.append(id);
+	}
+	return { ok = true, payload = { active_count = this.store.journal.order.len() } };
 }
 `;
   const fixtureBridgeWithProbe = fixtureBridge.replace('\t\tif (payload.command == "survey_sites") {', migrationProbe + '\t\tif (payload.command == "survey_sites") {');
@@ -388,6 +410,10 @@ async function main() {
 	  const loadBudget = assertOk("load_budget_probe_seed", loadBudgetWire.payload);
 	  if (loadBudget.payload?.seeded !== 2 || loadBudget.payload?.entries_each !== 111) throw new Error("load budget probe did not seed two 111-entry partial operations");
 	  evidence.steps.push({ name: "load_budget_probe_seed", response: loadBudgetWire });
+	  const capacityWire = await client.requestGameScript("execute", { company_id: 0, command: "capacity_probe_fill", params: {} });
+	  const capacity = assertOk("capacity_probe_fill", capacityWire.payload);
+	  if (capacity.payload?.active_count !== 256) throw new Error(`capacity probe did not fill journal: ${JSON.stringify(capacity)}`);
+	  evidence.steps.push({ name: "capacity_probe_fill", response: capacityWire });
 
       evidence.steps.push({ name: "save", response: await client.rcon("save directorate_gate") });
       await client.shutdown();
@@ -415,6 +441,28 @@ async function main() {
       const replayHandlers = createToolHandlers(new AdminOpenTtdGateway(client));
       evidence.steps.push({ name: "restart_connect", ok: true });
 
+	  await delay(1000);
+	  const retainedWire = await client.requestGameScript("execute", { company_id: 0, command: "load_budget_probe_status", params: {} });
+	  const retained = assertOk("load_budget_probe_status", retainedWire.payload);
+	  if (retained.payload?.all_retained !== true || retained.payload?.first_entries !== 111 || retained.payload?.second_entries !== 111 || retained.payload?.active_count !== 256 || retained.payload?.deferred_count !== 0) {
+		throw new Error(`deferred partial journals were not all retained: ${JSON.stringify(retained)}`);
+	  }
+	  evidence.steps.push({ name: "load_budget_probe_status", response: retainedWire });
+
+	  const immediateReplay = assertNotOk("immediate_deferred_replay", await request(replayHandlers, "apply", {
+		company_id: 0,
+		plan_id: "directorate-gate-plan",
+		revision: 4,
+		phase: "commit",
+		operation_id: "directorate-gate.partial-b",
+		reserve: 0,
+	  }));
+	  evidence.steps.push({ name: "immediate_deferred_replay", response: immediateReplay });
+	  const afterReplayWire = await client.requestGameScript("execute", { company_id: 0, command: "load_budget_probe_status", params: {} });
+	  const afterReplay = assertOk("load_budget_probe_status_after_replay", afterReplayWire.payload);
+	  if (afterReplay.payload?.active_count !== 256 || afterReplay.payload?.deferred_count !== 0 || afterReplay.payload?.second_entries !== 111) throw new Error(`immediate replay changed persisted journal: ${JSON.stringify(afterReplay)}`);
+	  evidence.steps.push({ name: "load_budget_probe_status_after_replay", response: afterReplayWire });
+
       const replayCommission = await request(replayHandlers, "commission", {
         company_id: 0,
         plan_id: "directorate-gate-plan",
@@ -434,6 +482,18 @@ async function main() {
       const verifyAfterRestart = assertOk("verify_topology_after_restart", await request(replayHandlers, "verify", { company_id: 0, route_id: "directorate-gate-route", level: "topology" }));
       if (verifyAfterRestart.payload?.health?.topology_ok !== true) throw new Error(`topology not ok after restart: ${JSON.stringify(verifyAfterRestart)}`);
       evidence.steps.push({ name: "verify_topology_after_restart", response: verifyAfterRestart });
+
+	  const rollbackProbe = assertOk("load_budget_probe_rollback", await request(replayHandlers, "apply", {
+		company_id: 0,
+		plan_id: "directorate-gate-plan",
+		revision: 4,
+		phase: "rollback",
+		operation_id: "directorate-gate.partial-rollback",
+		target_operation_id: "directorate-gate.partial-a",
+		reserve: 0,
+	  }));
+	  if (rollbackProbe.payload?.remaining?.length !== 0) throw new Error(`deferred rollback did not complete: ${JSON.stringify(rollbackProbe)}`);
+	  evidence.steps.push({ name: "load_budget_probe_rollback", response: rollbackProbe });
       await client.shutdown();
     });
   } catch (error) {
