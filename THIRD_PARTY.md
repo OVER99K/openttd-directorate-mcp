@@ -7,9 +7,11 @@ This clean-room repository does not inherit source or history from another OpenT
 | Model Context Protocol TypeScript SDK | MCP server and transports | MIT | https://github.com/modelcontextprotocol/typescript-sdk |
 | Zod | Runtime request validation | MIT | https://github.com/colinhacks/zod |
 | TypeScript | Build toolchain | Apache-2.0 | https://github.com/microsoft/TypeScript |
+| Node.js | JavaScript runtime | MIT | https://github.com/nodejs/node |
 | tsx | Development runner | MIT | https://github.com/privatenumber/tsx |
 | DefinitelyTyped Node types | Type declarations | MIT | https://github.com/DefinitelyTyped/DefinitelyTyped |
 | OpenTTD | Runtime, Admin Network, and GameScript APIs | GPL-2.0 | https://github.com/OpenTTD/OpenTTD |
+| OpenGFX | Graphics set used by disposable engine fixtures | GPL-2.0 | https://github.com/OpenTTD/OpenGFX |
 
 Protocol and API references:
 

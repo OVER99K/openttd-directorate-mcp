@@ -2,6 +2,18 @@
   "name": "openttd-directorate-mcp",
   "version": "0.1.0",
   "description": "Clean-room MCP and OpenTTD GameScript control framework for deterministic transport planning.",
+  "author": {
+    "name": "Nicolette",
+    "email": "nicolette@nicai.space",
+    "url": "https://nicai.space/"
+  },
+  "contributors": [
+    {
+      "name": "Nicolette",
+      "email": "nicolette@nicai.space",
+      "url": "https://nicai.space/"
+    }
+  ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/OVER99K/openttd-directorate-mcp.git"
