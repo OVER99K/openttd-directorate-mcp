@@ -27,6 +27,7 @@ function D4_CompileBuildProgram(plan) {
 	local paired = { ok = true, return_lane = [] };
 	local destination_return_entry = null;
 	local source_return_exit = null;
+	local return_endpoint_diagnostics = "";
 	if (!single_shuttle) {
 		/* The selected outbound platform can put the adjacent station platform on
 		 * either side after rotation. Try both bounded offsets and retain the one
@@ -36,13 +37,14 @@ function D4_CompileBuildProgram(plan) {
 			if (!candidate.ok) continue;
 			local candidate_destination_entry = D4_SelectLanePlatformEndpoint(plan.destination_blueprint, candidate.return_lane[0], candidate.return_lane[1], true);
 			local candidate_source_exit = D4_SelectLanePlatformEndpoint(plan.station_blueprint, candidate.return_lane[candidate.return_lane.len() - 1], candidate.return_lane[candidate.return_lane.len() - 2], false);
+			return_endpoint_diagnostics += "side=" + side_turns + ":" + D4_PointKey(candidate.return_lane[0]) + ">" + D4_PointKey(candidate.return_lane[candidate.return_lane.len() - 1]) + ":dest=" + (candidate_destination_entry != null) + ":source=" + (candidate_source_exit != null) + ";";
 			if (candidate_destination_entry == null || candidate_source_exit == null) continue;
 			paired = candidate;
 			destination_return_entry = candidate_destination_entry;
 			source_return_exit = candidate_source_exit;
 			break;
 		}
-		if (destination_return_entry == null || source_return_exit == null) return { ok = false, error = D4_Error("program_return_station_endpoint_missing", "") };
+		if (destination_return_entry == null || source_return_exit == null) return { ok = false, error = D4_Error("program_return_station_endpoint_missing", return_endpoint_diagnostics) };
 	}
 	if (!D4_AppendLaneOperations(ops, "outbound", route.path, source_entry, destination_exit)) return { ok = false, error = D4_Error("program_invalid_outbound", "") };
 	if (!single_shuttle) {
