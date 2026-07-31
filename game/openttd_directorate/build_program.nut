@@ -95,8 +95,8 @@ function D4_CompileBuildProgram(plan) {
 function D4_AppendLaneSignals(ops, prefix, path, spacing, excluded) {
 	if (!D4_IsArray(ops) || !D4_IsArray(path) || path.len() < 8) return 0;
 	local count = 0;
-	local last_index = -spacing;
-	for (local i = 2; i + 2 < path.len(); i++) {
+	local last_index = 0;
+	for (local i = spacing; i + 2 < path.len(); i++) {
 		if (i - last_index < spacing) continue;
 		local incoming = D4_DirectionBetween(path[i - 1], path[i]);
 		local outgoing = D4_DirectionBetween(path[i], path[i + 1]);
