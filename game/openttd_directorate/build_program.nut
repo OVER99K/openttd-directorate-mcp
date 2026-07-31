@@ -432,6 +432,15 @@ function D4_ReadbackProgramOperation(op, company_id, rollback_kind) {
 	return detail;
 }
 
+function D4_PointInStationRect(point, station) {
+	if (!D4_IsTable(point) || !D4_IsTable(station) || !D4_Has(station, "point") || !D4_Has(station, "end_point")) return false;
+	local min_x = station.point.x < station.end_point.x ? station.point.x : station.end_point.x;
+	local max_x = station.point.x > station.end_point.x ? station.point.x : station.end_point.x;
+	local min_y = station.point.y < station.end_point.y ? station.point.y : station.end_point.y;
+	local max_y = station.point.y > station.end_point.y ? station.point.y : station.end_point.y;
+	return point.x >= min_x && point.x <= max_x && point.y >= min_y && point.y <= max_y;
+}
+
 function D4_VerifyProgramTopology(program, company_id) {
 	local failures = [];
 	local stations = [];
@@ -455,12 +464,12 @@ function D4_VerifyProgramTopology(program, company_id) {
 		local connected = false;
 		local rail_op_id = null;
 		foreach (rail in rails) {
-			if (rail.prev == station.tile && GSRail.AreTilesConnected(station.tile, rail.tile, rail.next)) {
+			if (D4_Has(rail, "prev_point") && D4_PointInStationRect(rail.prev_point, station) && GSRail.AreTilesConnected(rail.prev, rail.tile, rail.next)) {
 				connected = true;
 				rail_op_id = rail.op_id;
 				break;
 			}
-			if (rail.next == station.tile && GSRail.AreTilesConnected(rail.prev, rail.tile, station.tile)) {
+			if (D4_Has(rail, "next_point") && D4_PointInStationRect(rail.next_point, station) && GSRail.AreTilesConnected(rail.prev, rail.tile, rail.next)) {
 				connected = true;
 				rail_op_id = rail.op_id;
 				break;
