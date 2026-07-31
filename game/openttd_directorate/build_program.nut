@@ -122,13 +122,15 @@ function D4_UpgradeBuildProgram(plan) {
 	return true;
 }
 
-function D4_SelectBestSitePair(source_candidates, destination_candidates) {
+function D4_SelectBestSitePair(source_candidates, destination_candidates, excluded = null) {
 	local best = null;
 	local best_score = null;
 	local source_limit = source_candidates.len() < DIRECTORATE_M4_MAX_SITES ? source_candidates.len() : DIRECTORATE_M4_MAX_SITES;
 	local destination_limit = destination_candidates.len() < DIRECTORATE_M4_MAX_SITES ? destination_candidates.len() : DIRECTORATE_M4_MAX_SITES;
 	for (local si = 0; si < source_limit; si++) {
 		for (local di = 0; di < destination_limit; di++) {
+			local pair_key = si + ":" + di;
+			if (excluded != null && pair_key in excluded) continue;
 			local source = source_candidates[si];
 			local destination = destination_candidates[di];
 			local source_throat = D4_BlueprintPortLocation(source.blueprint, "throat_ne");
