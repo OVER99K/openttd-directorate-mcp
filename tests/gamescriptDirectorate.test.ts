@@ -177,6 +177,12 @@ test("Station spread reads the live OpenTTD game setting", () => {
   assert.doesNotMatch(survey, /GSController\.GetSetting\("station_spread"\)/);
 });
 
+test("Initial paired corridor remains signal-free for single-train commissioning", () => {
+  const program = readFileSync(join(gameDir, "build_program.nut"), "utf8");
+  assert.doesNotMatch(program, /op_id = "signal\.(?:outbound|return)\.0"/);
+  assert.match(program, /signals belong to later capacity expansion/);
+});
+
 test("Station survey uses authoritative producer and acceptor catchment tiles", () => {
   const survey = readFileSync(join(gameDir, "site_survey.nut"), "utf8");
   const store = readFileSync(join(gameDir, "plan_store.nut"), "utf8");

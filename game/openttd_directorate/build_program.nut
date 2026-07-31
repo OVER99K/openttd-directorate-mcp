@@ -37,20 +37,9 @@ function D4_CompileBuildProgram(plan) {
 		ops.append(depot.op);
 	}
 
-	local signal_type = GSRail.SIGNALTYPE_PBS;
-	/* A one-train shuttle neither needs nor can preflight a signal before its
-	 * track exists: GSTestMode commands do not persist earlier simulated rail
-	 * operations. Multi-train templates retain explicit signal operations. */
-	if (!single_shuttle && route.path.len() >= 5) {
-		local p = route.path[2];
-		local f = route.path[3];
-		ops.append({ op_id = "signal.outbound.0", kind = "signal", tile = D4_ToTile(p), point = p, front = D4_ToTile(f), signal_type = signal_type });
-	}
-	if (!single_shuttle && paired.return_lane.len() >= 5) {
-		local p2 = paired.return_lane[2];
-		local f2 = paired.return_lane[3];
-		ops.append({ op_id = "signal.return.0", kind = "signal", tile = D4_ToTile(p2), point = p2, front = D4_ToTile(f2), signal_type = signal_type });
-	}
+	/* Commissioning creates one train. Keep the initial paired corridor
+	 * unsignalled; signals belong to later capacity expansion, after exact
+	 * running directions and junction positions are known. */
 
 	local validation = D4_ValidateBuildProgram(ops);
 	if (!validation.ok) return validation;
