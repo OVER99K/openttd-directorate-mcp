@@ -41,6 +41,10 @@ test("Route registry is persistent, bounded, and reports health/economics", () =
   assert.match(registry, /last_year_profit/);
   assert.match(registry, /this_year_profit/);
   assert.match(registry, /lifetime_profit/);
+  assert.match(registry, /function D4_RouteRuntimeSnapshot\(route\)/);
+  assert.match(registry, /GSOrder\.ResolveOrderPosition\(entry\.vehicle_id, GSOrder\.ORDER_CURRENT\)/);
+  assert.match(registry, /GSVehicle\.GetCargoLoad\(entry\.vehicle_id, route\.cargo_type\)/);
+  assert.match(registry, /runtime = D4_RouteRuntimeSnapshot\(route\)/);
   assert.match(registry, /DIRECTORATE_M4_MAX_ROUTES/);
   assert.match(registry, /DIRECTORATE_M4_MAX_ROUTE_VEHICLES/);
   assert.match(registry, /"commissioned"/);

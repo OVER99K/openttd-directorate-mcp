@@ -445,6 +445,32 @@ function D4_UpdateRouteHealth(route) {
 	return { topology_ok = topology.ok, orders_ok = route.health.orders_ok, vehicle_running = running, positive_revenue = profit_total > 0 };
 }
 
+function D4_RouteRuntimeSnapshot(route) {
+	local vehicles = [];
+	foreach (entry in route.vehicles) {
+		if (!GSVehicle.IsValidVehicle(entry.vehicle_id)) {
+			vehicles.append({ vehicle_id = entry.vehicle_id, valid = false });
+			continue;
+		}
+		local order_destinations = [];
+		local order_count = GSOrder.GetOrderCount(entry.vehicle_id);
+		for (local i = 0; i < order_count && i < 16; i++) order_destinations.append(GSOrder.GetOrderDestination(entry.vehicle_id, i));
+		vehicles.append({
+			vehicle_id = entry.vehicle_id,
+			valid = true,
+			state = GSVehicle.GetState(entry.vehicle_id),
+			location = GSVehicle.GetLocation(entry.vehicle_id),
+			current_order = GSOrder.ResolveOrderPosition(entry.vehicle_id, GSOrder.ORDER_CURRENT),
+			order_destinations = order_destinations,
+			cargo_load = GSVehicle.GetCargoLoad(entry.vehicle_id, route.cargo_type),
+			cargo_capacity = GSVehicle.GetCapacity(entry.vehicle_id, route.cargo_type),
+			profit_last_year = GSVehicle.GetProfitLastYear(entry.vehicle_id),
+			profit_this_year = GSVehicle.GetProfitThisYear(entry.vehicle_id),
+		});
+	}
+	return { tick = D4_Tick(), vehicles = vehicles };
+}
+
 function D4_VerifyRoute(registry, route_id, company_id, level) {
 	local route = registry.Get(route_id);
 	if (route == null) return { ok = false, error = D4_Error("route_not_found", route_id) };
@@ -455,7 +481,7 @@ function D4_VerifyRoute(registry, route_id, company_id, level) {
 	if (level == "economic") {
 		local result = health.topology_ok && health.orders_ok && health.vehicle_running && health.positive_revenue;
 		if (!result && health.positive_revenue == false) registry.AddAlert(route_id, "warning", "not_yet_profitable", "revenue_check_pending");
-		return { ok = result, health = health, economics = route.economics };
+		return { ok = result, health = health, economics = route.economics, runtime = D4_RouteRuntimeSnapshot(route) };
 	}
 	return { ok = false, error = D4_Error("invalid_level", level) };
 }
