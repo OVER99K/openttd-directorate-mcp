@@ -468,7 +468,27 @@ function D4_RouteRuntimeSnapshot(route) {
 			profit_this_year = GSVehicle.GetProfitThisYear(entry.vehicle_id),
 		});
 	}
-	return { tick = D4_Tick(), vehicles = vehicles };
+	local source_station_id = GSStation.GetStationID(route.source_station_tile);
+	local destination_station_id = GSStation.GetStationID(route.destination_station_tile);
+	return {
+		tick = D4_Tick(),
+		vehicles = vehicles,
+		source = {
+			station_id = source_station_id,
+			station_tile = route.source_station_tile,
+			cargo_waiting = GSStation.IsValidStation(source_station_id) ? GSStation.GetCargoWaiting(source_station_id, route.cargo_type) : -1,
+			cargo_rating = GSStation.IsValidStation(source_station_id) ? GSStation.GetCargoRating(source_station_id, route.cargo_type) : -1,
+			industry_id = route.source_industry_id,
+			last_month_production = GSIndustry.IsValidIndustry(route.source_industry_id) ? GSIndustry.GetLastMonthProduction(route.source_industry_id, route.cargo_type) : -1,
+			last_month_transported = GSIndustry.IsValidIndustry(route.source_industry_id) ? GSIndustry.GetLastMonthTransported(route.source_industry_id, route.cargo_type) : -1,
+		},
+		destination = {
+			station_id = destination_station_id,
+			station_tile = route.destination_station_tile,
+			cargo_waiting = GSStation.IsValidStation(destination_station_id) ? GSStation.GetCargoWaiting(destination_station_id, route.cargo_type) : -1,
+			industry_id = route.destination_industry_id,
+		},
+	};
 }
 
 function D4_VerifyRoute(registry, route_id, company_id, level) {
