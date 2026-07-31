@@ -138,10 +138,21 @@ test("Source uses bounded loops and explicit safety constants", () => {
 });
 
 test("Depot access joins the depot mouth to the route instead of duplicating straight track", () => {
-  const program = readFileSync(join(gameDir, "build_program.nut"), "utf8");
-  assert.match(program, /ops\.append\(depot\.access_op\)/);
-  assert.match(program, /access_op\s*=\s*\{[^}]*kind\s*=\s*"rail_connection"[^}]*tile\s*=\s*D4_ToTile\(front\)[^}]*prev\s*=\s*D4_ToTile\(a\)[^}]*next\s*=\s*D4_ToTile\(depot_point\)/s);
-  assert.doesNotMatch(program, /access\s*=\s*\[a,\s*front\]/);
+	const program = readFileSync(join(gameDir, "build_program.nut"), "utf8");
+	assert.match(program, /ops\.append\(depot\.access_op\)/);
+	assert.match(program, /access_op\s*=\s*\{[^}]*kind\s*=\s*"rail_connection"[^}]*tile\s*=\s*D4_ToTile\(front\)[^}]*prev\s*=\s*D4_ToTile\(a\)[^}]*next\s*=\s*D4_ToTile\(depot_point\)/s);
+	assert.doesNotMatch(program, /access\s*=\s*\[a,\s*front\]/);
+	assert.match(program, /foreach \(return_point in paired\.return_lane\) occupied\[D4_PointKey\(return_point\)\] <- true/);
+	assert.match(program, /if \(occupied != null && D4_PointKey\(depot_point\) in occupied\) continue/);
+});
+
+test("Rollback ignores diagnostic journal records before validating rollback assets", () => {
+  const journal = readFileSync(join(gameDir, "operation_journal.nut"), "utf8");
+  const start = journal.indexOf("function D4_RollbackOperation");
+  const skipDiagnostics = journal.indexOf('if (entry.kind != "created") continue;', start);
+  const validateAsset = journal.indexOf("D4_IsSafeJournalEntry(entry, op.company_id, map_area)", start);
+  assert.ok(skipDiagnostics > start);
+  assert.ok(validateAsset > skipDiagnostics);
 });
 
 test("Single-shuttle routing uses the real station tiles as endpoint context", () => {

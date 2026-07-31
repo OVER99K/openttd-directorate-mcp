@@ -32,7 +32,13 @@ function D4_CompileBuildProgram(plan) {
 	if (!D4_AppendLaneOperations(ops, "outbound", route.path, source_entry, destination_exit)) return { ok = false, error = D4_Error("program_invalid_outbound", "") };
 	if (!single_shuttle && !D4_AppendLaneOperations(ops, "return", paired.return_lane, null, null)) return { ok = false, error = D4_Error("program_invalid_return", "") };
 
-	local depot = D4_DepotOperation(route.path);
+	/* A paired return lane occupies the outbound route's right-hand shoulder.
+	 * Keep an explicit occupancy set so the depot siding chooses the clear
+	 * shoulder instead of colliding with rail that this same program creates. */
+	local occupied = {};
+	foreach (route_point in route.path) occupied[D4_PointKey(route_point)] <- true;
+	foreach (return_point in paired.return_lane) occupied[D4_PointKey(return_point)] <- true;
+	local depot = D4_DepotOperation(route.path, occupied);
 	if (depot.ok) {
 		ops.append(depot.access_op);
 		ops.append(depot.op);
@@ -319,17 +325,23 @@ function D4_AppendLaneOperations(ops, prefix, path, entry_point, exit_point) {
 	return true;
 }
 
-function D4_DepotOperation(path) {
+function D4_DepotOperation(path, occupied = null) {
 	if (!D4_IsArray(path) || path.len() < 4) return { ok = false };
 	local a = path[1];
 	local b = path[2];
 	local dir = D4_DirectionBetween(a, b);
 	if (dir < 0) return { ok = false };
 	local front = b;
-	local depot_point = D4_Offset(front, D4_RightDir(dir), 1);
-	if (!D4_IsPointOnMap(depot_point)) return { ok = false };
-	local access_op = { op_id = "rail.depot_access.0", kind = "rail_connection", tile = D4_ToTile(front), point = front, prev = D4_ToTile(a), prev_point = a, next = D4_ToTile(depot_point), next_point = depot_point };
-	return { ok = true, access_op = access_op, op = { op_id = "depot.0", kind = "depot", tile = D4_ToTile(depot_point), point = depot_point, front = D4_ToTile(front), front_point = front } };
+	local sides = [D4_RightDir(dir), D4_RotateDir(D4_RightDir(dir), 2)];
+	foreach (side in sides) {
+		local depot_point = D4_Offset(front, side, 1);
+		if (!D4_IsPointOnMap(depot_point)) continue;
+		if (occupied != null && D4_PointKey(depot_point) in occupied) continue;
+		if (!D4_IsLegalPrimitive(a, front, depot_point)) continue;
+		local access_op = { op_id = "rail.depot_access.0", kind = "rail_connection", tile = D4_ToTile(front), point = front, prev = D4_ToTile(a), prev_point = a, next = D4_ToTile(depot_point), next_point = depot_point };
+		return { ok = true, access_op = access_op, op = { op_id = "depot.0", kind = "depot", tile = D4_ToTile(depot_point), point = depot_point, front = D4_ToTile(front), front_point = front } };
+	}
+	return { ok = false };
 }
 
 function D4_ValidateBuildProgram(ops) {

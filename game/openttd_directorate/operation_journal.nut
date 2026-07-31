@@ -443,8 +443,11 @@ function D4_RollbackOperation(journal, op) {
 	local map_area = GSMap.GetMapSizeX() * GSMap.GetMapSizeY();
 	for (local i = op.entries.len() - 1; i >= 0; i--) {
 		local entry = op.entries[i];
-		if (!D4_IsSafeJournalEntry(entry, op.company_id, map_area)) { remaining.append({ kind = "malformed", tile = -1 }); continue; }
+		/* Diagnostic entries describe failures and are not rollback assets. Skip
+		 * them before applying the stricter asset-detail validator. */
+		if (!D4_IsTable(entry) || !D4_Has(entry, "kind") || typeof entry.kind != "string") { remaining.append({ kind = "malformed", tile = -1 }); continue; }
 		if (entry.kind != "created") continue;
+		if (!D4_IsSafeJournalEntry(entry, op.company_id, map_area)) { remaining.append({ kind = "malformed", tile = -1 }); continue; }
 		if (typeof entry.tile != "integer") continue;
 		local tile = entry.tile;
 		local detail = entry.detail;
