@@ -133,6 +133,11 @@ class DirectorateM4Bridge {
 			local result = D4_CommissionRoute(this.store, this.store.registry, payload.company_id, payload.params.plan_id, payload.params.route_id, options);
 			return { ok = result.ok, payload = result, error = D4_Has(result, "error") ? result.error : null };
 		}
+		if (payload.command == "list_industries") {
+			if (!("params" in payload) || !D4_IsTable(payload.params) || !("cargo_label" in payload.params) || typeof payload.params.cargo_label != "string" || !("role" in payload.params) || typeof payload.params.role != "string") return { ok = false, error = D4_Error("invalid_industry_query", "") };
+			local limit = D4_Has(payload.params, "limit") && typeof payload.params.limit == "integer" ? payload.params.limit : 32;
+			return D4_ListIndustriesForCargo(payload.params.cargo_label, payload.params.role, limit);
+		}
 		if (payload.command == "survey_sites") {
 			if (!("params" in payload) || !D4_IsTable(payload.params) || !("industry_id" in payload.params) || !("template" in payload.params)) return { ok = false, error = D4_Error("invalid_survey", "") };
 			local policy = D4_Has(payload.params, "policy") && D4_IsTable(payload.params.policy) ? payload.params.policy : {};

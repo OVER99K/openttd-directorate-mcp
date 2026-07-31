@@ -61,7 +61,21 @@ function writeConfig() {
   cpSync(join(repoRoot, "game/openttd_directorate"), join(fixture, "game/openttd_directorate"), { recursive: true });
   const fixtureBridgePath = join(fixture, "game/openttd_directorate/bridge.nut");
   const fixtureBridge = readFileSync(fixtureBridgePath, "utf8");
-  const migrationProbe = `\t\tif (payload.command == "migration_safety_probe") {
+  const migrationProbe = `\t\tif (payload.command == "signal_api_probe") {
+\t\t\tlocal mode = GSCompanyMode(payload.company_id);
+\t\t\tif (!GSCompanyMode.IsValid() || !D4_SelectRailType()) return { ok = false, error = D4_Error("probe_company_mode_failed", payload.company_id.tostring()) };
+\t\t\tlocal plan = this.store.GetPlan(payload.params.plan_id);
+\t\t\tif (plan == null || !D4_Has(plan, "build_program")) return { ok = false, error = D4_Error("probe_plan_missing", payload.params.plan_id) };
+\t\t\tforeach (op in plan.build_program.ops) {
+\t\t\t\tif (!D4_IsTable(op) || !D4_Has(op, "kind") || op.kind != "rail_connection") continue;
+\t\t\t\tif (!GSRail.BuildSignal(op.tile, op.prev, GSRail.SIGNALTYPE_PBS_ONEWAY)) continue;
+\t\t\t\tlocal signal_type = GSRail.GetSignalType(op.tile, op.prev);
+\t\t\t\tlocal removed = signal_type == GSRail.SIGNALTYPE_PBS_ONEWAY && GSRail.RemoveSignal(op.tile, op.prev);
+\t\t\t\treturn { ok = signal_type == GSRail.SIGNALTYPE_PBS_ONEWAY && removed, payload = { tile = op.tile, front = op.prev, signal_type = signal_type, removed = removed } };
+\t\t\t}
+\t\t\treturn { ok = false, error = D4_Error("probe_signal_unbuildable", "") };
+\t\t}
+\t\tif (payload.command == "migration_safety_probe") {
 \t\t\tlocal original = this.store.GetPlan(payload.params.plan_id);
 \t\t\tif (original == null) return { ok = false, error = D4_Error("probe_plan_missing", payload.params.plan_id) };
 \t\t\tlocal empty_path = { revision = 0, state = "ready", station_blueprint = original.station_blueprint, build_program = { ok = true, version = 1, ops = original.build_program.ops, path = [] } };
@@ -296,6 +310,15 @@ async function main() {
       await delay(1000);
       evidence.steps.push({ name: "observe", response: assertOk("observe", await request(handlers, "observe", { scope: "plans", limit: 4 })) });
 
+      const industryWire = await client.requestGameScript("execute", {
+        company_id: 0,
+        command: "list_industries",
+        params: { cargo_label: "COAL", role: "source", limit: 4 },
+      });
+      const industryList = assertOk("list_industries", industryWire.payload);
+      if (!Array.isArray(industryList.payload?.industries)) throw new Error(`industry discovery did not return an array: ${JSON.stringify(industryList)}`);
+      evidence.steps.push({ name: "list_industries", response: industryWire });
+
       const plan = await request(handlers, "plan", {
         company_id: 0,
         plan_id: "directorate-gate-plan",
@@ -305,6 +328,7 @@ async function main() {
           site_search_radius: 2,
           route_expansion_limit: 768,
           route_frontier_limit: 4096,
+          wagon_count: 3,
         },
       });
       evidence.steps.push({ name: "plan", response: assertOk("plan", plan) });
@@ -344,6 +368,15 @@ async function main() {
       evidence.steps.push({ name: "commit", response: commit });
       commitRevision = commit.payload?.revision ?? revision + 1;
 
+      const signalProbeWire = await client.requestGameScript("execute", {
+        company_id: 0,
+        command: "signal_api_probe",
+        params: { plan_id: "directorate-gate-plan" },
+      });
+      const signalProbe = assertOk("signal_api_probe", signalProbeWire.payload);
+      if (typeof signalProbe.payload?.signal_type !== "number" || signalProbe.payload?.removed !== true) throw new Error(`one-way PBS signal probe failed: ${JSON.stringify(signalProbe)}`);
+      evidence.steps.push({ name: "signal_api_probe", response: signalProbeWire });
+
       const observeApplied = assertOk("observe_after_commit", await request(handlers, "observe", { scope: "plans", route_id: "directorate-gate-plan" }));
       if (observeApplied.payload?.plans?.[0]?.state !== "applied") throw new Error(`plan not applied: ${JSON.stringify(observeApplied)}`);
       evidence.steps.push({ name: "observe_after_commit", response: observeApplied });
@@ -357,6 +390,10 @@ async function main() {
           cargo_label: "",
         }),
       );
+      const commissionedVehicle = commission.payload?.response ?? commission.payload;
+      if (commissionedVehicle?.wagon_count !== 1 || commissionedVehicle?.capacity < 1 || commissionedVehicle?.length > 16) {
+        throw new Error(`platform-bounded commissioning failed: ${JSON.stringify(commission)}`);
+      }
       evidence.steps.push({ name: "commission_route", response: commission });
 
       const observeRoutes = assertOk("observe_routes", await request(handlers, "observe", { scope: "routes", company_id: 0, limit: 16 }));

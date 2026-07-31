@@ -195,6 +195,38 @@ function D4_StationTileFromPlan(plan, which) {
 	return null;
 }
 
+function D4_CargoTypeByLabel(label) {
+	if (typeof label != "string" || label.len() < 1 || label.len() > 8) return null;
+	local normalized = label.tolower();
+	for (local cargo = 0; cargo < DIRECTORATE_M4_MAX_CARGO_TYPES; cargo++) {
+		if (!GSCargo.IsValidCargo(cargo)) continue;
+		local candidate = GSCargo.GetCargoLabel(cargo);
+		if (candidate != null && candidate.tolower() == normalized) return cargo;
+	}
+	return null;
+}
+
+function D4_ListIndustriesForCargo(cargo_label, role, limit) {
+	local cargo_type = D4_CargoTypeByLabel(cargo_label);
+	if (cargo_type == null) return { ok = false, error = D4_Error("invalid_cargo_label", cargo_label) };
+	if (role != "source" && role != "destination") return { ok = false, error = D4_Error("invalid_industry_role", role) };
+	local bounded_limit = D4_ClampInt(limit, 32, 1, 64);
+	local industries = role == "source" ? GSIndustryList_CargoProducing(cargo_type) : GSIndustryList_CargoAccepting(cargo_type);
+	local rows = [];
+	for (local industry_id = industries.Begin(); !industries.IsEnd() && rows.len() < bounded_limit; industry_id = industries.Next()) {
+		if (!GSIndustry.IsValidIndustry(industry_id)) continue;
+		local point = D4_FromTile(GSIndustry.GetLocation(industry_id));
+		rows.append({
+			industry_id = industry_id,
+			name = D4_StringOr(GSIndustry.GetName(industry_id), "", 128),
+			location = point,
+			production = role == "source" ? GSIndustry.GetLastMonthProduction(industry_id, cargo_type) : 0,
+			transported = role == "source" ? GSIndustry.GetLastMonthTransported(industry_id, cargo_type) : 0,
+		});
+	}
+	return { ok = true, payload = { cargo_type = cargo_type, cargo_label = D4_SafeCargoLabel(cargo_type), role = role, industries = rows, count = rows.len(), truncated = !industries.IsEnd() } };
+}
+
 function D4_CargoProducedAtIndustry(industry_id) {
 	if (!GSIndustry.IsValidIndustry(industry_id)) return [];
 	local produced = [];
@@ -287,7 +319,7 @@ function D4_CommissionRoute(plan_store, registry, company_id, plan_id, route_id,
 	route.state = "commissioned";
 	route.commissioned_tick = D4_Tick();
 	route.updated_tick = D4_Tick();
-	return { ok = true, route = registry.Summary(route), vehicle_id = vehicle.vehicle_id, cargo_type = cargo_pick.cargo_type };
+	return { ok = true, route = registry.Summary(route), vehicle_id = vehicle.vehicle_id, cargo_type = cargo_pick.cargo_type, wagon_count = vehicle.wagon_count, length = vehicle.length, capacity = vehicle.capacity };
 }
 
 function D4_VerifyRouteTopology(route, company_id) {
@@ -346,6 +378,14 @@ function D4_ConfigureRouteOrders(route, company_id, plan_store) {
 	return { ok = true, depot_tile = depot_tile, source_tile = route.source_station_tile, destination_tile = route.destination_station_tile };
 }
 
+function D4_RoutePlatformLength(plan) {
+	if (!D4_IsTable(plan) || !D4_Has(plan, "build_program") || !D4_IsTable(plan.build_program) || !D4_Has(plan.build_program, "ops")) return 1;
+	foreach (op in plan.build_program.ops) {
+		if (D4_IsTable(op) && D4_Has(op, "op_id") && op.op_id == "source_station" && D4_Has(op, "platform_length") && typeof op.platform_length == "integer") return op.platform_length;
+	}
+	return 1;
+}
+
 function D4_BuildRouteVehicle(route, company_id, plan_store) {
 	local plan = plan_store.GetPlan(route.plan_id);
 	if (plan == null) return { ok = false, error = D4_Error("plan_not_found", route.route_id) };
@@ -357,44 +397,44 @@ function D4_BuildRouteVehicle(route, company_id, plan_store) {
 	local rail_type = GSRail.GetCurrentRailType();
 	local engine_id = D4_FindBuildableRailEngine(route.cargo_type, rail_type);
 	if (engine_id == null) return { ok = false, error = D4_Error("no_suitable_engine", route.cargo_type.tostring()) };
-	local estimated_vehicle_cost = GSEngine.GetPrice(engine_id);
-	for (local quote_wagon = 0; quote_wagon < 2048; quote_wagon++) {
-		if (!GSEngine.IsValidEngine(quote_wagon) || !GSEngine.IsBuildable(quote_wagon)) continue;
-		if (GSEngine.GetVehicleType(quote_wagon) != GSVehicle.VT_RAIL || !GSEngine.IsWagon(quote_wagon)) continue;
-		if (!GSEngine.CanRefitCargo(quote_wagon, route.cargo_type)) continue;
-		estimated_vehicle_cost += GSEngine.GetPrice(quote_wagon);
+	local wagon_engine = null;
+	for (local candidate = 0; candidate < 2048; candidate++) {
+		if (!GSEngine.IsValidEngine(candidate) || !GSEngine.IsBuildable(candidate)) continue;
+		if (GSEngine.GetVehicleType(candidate) != GSVehicle.VT_RAIL || !GSEngine.IsWagon(candidate)) continue;
+		if (!GSEngine.CanRefitCargo(candidate, route.cargo_type)) continue;
+		wagon_engine = candidate;
 		break;
 	}
+	if (wagon_engine == null) return { ok = false, error = D4_Error("no_suitable_wagon", route.cargo_type.tostring()) };
+	local target_wagons = D4_ClampInt(D4_Has(plan.policy, "wagon_count") ? plan.policy.wagon_count : 1, 1, 1, 12);
+	local estimated_vehicle_cost = GSEngine.GetPrice(engine_id) + GSEngine.GetPrice(wagon_engine) * target_wagons;
 	if (!D4_EnsureCompanyFunds(company_id, estimated_vehicle_cost)) return { ok = false, error = D4_Error("insufficient_commission_funds", estimated_vehicle_cost.tostring()) };
 	local vehicle_id = GSVehicle.BuildVehicle(orders.depot_tile, engine_id);
 	if (!GSVehicle.IsValidVehicle(vehicle_id)) return { ok = false, error = D4_Error("vehicle_build_failed", engine_id.tostring()) };
 	local build_cost = GSEngine.GetPrice(engine_id);
-	local wagon_id = null;
-	local wagon_cost = 0;
-	for (local wagon_engine = 0; wagon_engine < 2048; wagon_engine++) {
-		if (!GSEngine.IsValidEngine(wagon_engine)) continue;
-		if (!GSEngine.IsBuildable(wagon_engine)) continue;
-		if (GSEngine.GetVehicleType(wagon_engine) != GSVehicle.VT_RAIL) continue;
-		if (!GSEngine.IsWagon(wagon_engine)) continue;
-		if (!GSEngine.CanRefitCargo(wagon_engine, route.cargo_type)) continue;
-		wagon_id = GSVehicle.BuildVehicle(orders.depot_tile, wagon_engine);
-		if (GSVehicle.IsValidVehicle(wagon_id)) {
-			wagon_cost = GSEngine.GetPrice(wagon_engine);
-			break;
-		}
-	}
-	if (wagon_id != null && GSVehicle.IsValidVehicle(wagon_id)) {
-		GSVehicle.MoveWagon(wagon_id, 0, vehicle_id, 0);
+	local built_wagons = 0;
+	local platform_units = D4_RoutePlatformLength(plan) * 16;
+	for (local index = 0; index < target_wagons; index++) {
+		local wagon_id = GSVehicle.BuildVehicle(orders.depot_tile, wagon_engine);
+		if (!GSVehicle.IsValidVehicle(wagon_id)) break;
 		if (!GSVehicle.RefitVehicle(wagon_id, route.cargo_type)) {
 			GSVehicle.SellVehicle(wagon_id);
+			break;
 		}
+		if (GSVehicle.GetLength(vehicle_id) + GSVehicle.GetLength(wagon_id) > platform_units) {
+			GSVehicle.SellVehicle(wagon_id);
+			break;
+		}
+		if (!GSVehicle.MoveWagon(wagon_id, 0, vehicle_id, 0)) {
+			GSVehicle.SellVehicle(wagon_id);
+			break;
+		}
+		built_wagons++;
+		build_cost += GSEngine.GetPrice(wagon_engine);
 	}
-	if (!GSVehicle.RefitVehicle(vehicle_id, route.cargo_type)) {
-		if (!GSVehicle.BuildVehicleWithRefit(orders.depot_tile, engine_id, route.cargo_type)) {
-			GSVehicle.SellVehicle(vehicle_id);
-			if (wagon_id != null) GSVehicle.SellVehicle(wagon_id);
-			return { ok = false, error = D4_Error("refit_failed", route.cargo_type.tostring()) };
-		}
+	if (built_wagons < 1 || GSVehicle.GetCapacity(vehicle_id, route.cargo_type) < 1) {
+		GSVehicle.SellVehicle(vehicle_id);
+		return { ok = false, error = D4_Error("wagon_assembly_failed", built_wagons.tostring()) };
 	}
 	local flags_source = GSOrder.OF_FULL_LOAD;
 	local flags_dest = GSOrder.OF_UNLOAD;
@@ -411,7 +451,7 @@ function D4_BuildRouteVehicle(route, company_id, plan_store) {
 		GSVehicle.SellVehicle(vehicle_id);
 		return { ok = false, error = D4_Error("append_depot_order_failed", vehicle_id.tostring()) };
 	}
-	return { ok = true, vehicle_id = vehicle_id, build_cost = build_cost };
+	return { ok = true, vehicle_id = vehicle_id, build_cost = build_cost, wagon_count = built_wagons, length = GSVehicle.GetLength(vehicle_id), capacity = GSVehicle.GetCapacity(vehicle_id, route.cargo_type) };
 }
 
 function D4_UpdateRouteHealth(route) {

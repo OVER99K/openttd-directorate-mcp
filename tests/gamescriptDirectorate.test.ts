@@ -215,10 +215,14 @@ test("Station spread reads the live OpenTTD game setting", () => {
   assert.doesNotMatch(survey, /GSController\.GetSetting\("station_spread"\)/);
 });
 
-test("Initial paired corridor remains signal-free for single-train commissioning", () => {
+test("Paired corridors emit bounded one-way PBS signals while staged single track stays unsignalled", () => {
   const program = readFileSync(join(gameDir, "build_program.nut"), "utf8");
-  assert.doesNotMatch(program, /op_id = "signal\.(?:outbound|return)\.0"/);
-  assert.match(program, /signals belong to later capacity expansion/);
+  assert.match(program, /signals_enabled = paired_mode/);
+  assert.match(program, /D4_AppendLaneSignals\(ops, "outbound", route\.path/);
+  assert.match(program, /D4_AppendLaneSignals\(ops, "return", paired\.return_lane/);
+  assert.match(program, /signal_type = GSRail\.SIGNALTYPE_PBS_ONEWAY/);
+  assert.match(program, /front = D4_ToTile\(path\[i - 1\]\)/);
+  assert.match(program, /incoming != outgoing/);
   assert.match(program, /initial_single_track/);
   assert.match(program, /paired_mode = !single_shuttle && !initial_single_track/);
 });
@@ -244,6 +248,17 @@ test("Paired corridor connects its outbound lane to both station platforms", () 
   assert.match(program, /D4_PointInStationRect\(rail\.next_point, station\)/);
   assert.doesNotMatch(program, /rail\.prev == station\.tile/);
   assert.doesNotMatch(program, /rail\.next == station\.tile/);
+});
+
+test("Commissioning scales cargo consists within the actual station length", () => {
+  const routes = readFileSync(join(gameDir, "route_registry.nut"), "utf8");
+  assert.match(routes, /wagon_count/);
+  assert.match(routes, /GSVehicle\.GetLength\(vehicle_id\) \+ GSVehicle\.GetLength\(wagon_id\) > platform_units/);
+  assert.match(routes, /built_wagons < 1 \|\| GSVehicle\.GetCapacity/);
+  assert.match(routes, /build_cost \+= GSEngine\.GetPrice\(wagon_engine\)/);
+  assert.match(routes, /function D4_ListIndustriesForCargo/);
+  const bridge = readFileSync(join(gameDir, "bridge.nut"), "utf8");
+  assert.match(bridge, /payload\.command == "list_industries"/);
 });
 
 test("Station survey uses authoritative producer and acceptor catchment tiles", () => {

@@ -70,9 +70,15 @@ function D4_CompileBuildProgram(plan) {
 		ops.append(depot.op);
 	}
 
-	/* Commissioning creates one train. Keep the initial paired corridor
-	 * unsignalled; signals belong to later capacity expansion, after exact
-	 * running directions and junction positions are known. */
+	local signals_enabled = paired_mode && D4_Has(plan.policy, "signals") && plan.policy.signals == true;
+	if (signals_enabled) {
+		local signal_spacing = D4_ClampInt(D4_Has(plan.policy, "signal_spacing") ? plan.policy.signal_spacing : 8, 8, 4, 16);
+		local excluded_signals = {};
+		if (depot.ok) excluded_signals[depot.op.front] <- true;
+		local outbound_signals = D4_AppendLaneSignals(ops, "outbound", route.path, signal_spacing, excluded_signals);
+		local return_signals = D4_AppendLaneSignals(ops, "return", paired.return_lane, signal_spacing, excluded_signals);
+		if (outbound_signals < 2 || return_signals < 2) return { ok = false, error = D4_Error("program_signal_spacing_unusable", outbound_signals.tostring() + ":" + return_signals.tostring()) };
+	}
 
 	local validation = D4_ValidateBuildProgram(ops);
 	if (!validation.ok) return validation;
@@ -84,6 +90,33 @@ function D4_CompileBuildProgram(plan) {
 		path = route.path,
 		return_lane = paired.return_lane,
 	};
+}
+
+function D4_AppendLaneSignals(ops, prefix, path, spacing, excluded) {
+	if (!D4_IsArray(ops) || !D4_IsArray(path) || path.len() < 8) return 0;
+	local count = 0;
+	local last_index = -spacing;
+	for (local i = 2; i + 2 < path.len(); i++) {
+		if (i - last_index < spacing) continue;
+		local incoming = D4_DirectionBetween(path[i - 1], path[i]);
+		local outgoing = D4_DirectionBetween(path[i], path[i + 1]);
+		if (incoming < 0 || incoming != outgoing) continue;
+		local tile = D4_ToTile(path[i]);
+		if (excluded != null && tile in excluded) continue;
+		ops.append({
+			op_id = "signal." + prefix + "." + count,
+			kind = "signal",
+			tile = tile,
+			point = path[i],
+			/* A signal faces the tile from which the permitted train approaches. */
+			front = D4_ToTile(path[i - 1]),
+			front_point = path[i - 1],
+			signal_type = GSRail.SIGNALTYPE_PBS_ONEWAY,
+		});
+		last_index = i;
+		count++;
+	}
+	return count;
 }
 
 /* Upgrade persisted v1 programs without rerunning the bounded A* planner.
