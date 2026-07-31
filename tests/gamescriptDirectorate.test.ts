@@ -106,9 +106,29 @@ test("Plan load defers deep build-program validation until the plan is accessed"
   const store = readFileSync(join(gameDir, "plan_store.nut"), "utf8");
   assert.match(store, /this\.IsPlanSafe\(plan, true, false\)/);
   assert.match(store, /function IsPlanSafe\(plan, allow_legacy = false, validate_program = true\)/);
+  assert.match(store, /function D4_IsAcceptedBuildProgramVersion\(version, allow_legacy_v1\)/);
+  assert.match(store, /version == DIRECTORATE_M4_BUILD_PROGRAM_VERSION \|\| version == 2 \|\| \(allow_legacy_v1 && version == 1\)/);
   assert.match(store, /if \(validate_program\) \{\s*local validation = D4_ValidateBuildProgram/s);
   assert.match(store, /if \(!this\.IsPlanSafe\(plan, false, true\)\) return null/);
   assert.match(store, /D4_Error\("unsafe_plan", requested_id\)/);
+});
+
+test("Build-program save/load fixtures pin v2 preservation, malformed v1 rejection, and current v3 topology", () => {
+  const v2 = JSON.parse(readFileSync("tests/fixtures/build-program-v2-plan.json", "utf8"));
+  const malformedV1 = JSON.parse(readFileSync("tests/fixtures/build-program-v1-malformed-plan.json", "utf8"));
+  const v3 = JSON.parse(readFileSync("tests/fixtures/build-program-v3-through-hub-plan.json", "utf8"));
+  assert.equal(v2.build_program.version, 2);
+  assert.equal(v2.build_program.topology, undefined);
+  assert.equal(v2.station_blueprint.name, "through_hub_4x7");
+  assert.equal(malformedV1.build_program.version, 1);
+  assert.deepEqual(malformedV1.build_program.path, []);
+  assert.equal(v3.build_program.version, 3);
+  assert.equal(v3.build_program.topology.kind, "through_hub_roro");
+
+  const store = readFileSync(join(gameDir, "plan_store.nut"), "utf8");
+  assert.match(store, /D4_IsAcceptedBuildProgramVersion\(plan\.build_program\.version, false\)/);
+  assert.match(store, /D4_UpgradeBuildProgram\(plan\)/);
+  assert.doesNotMatch(store, /program\.version = 3[\s\S]*topology <-/);
 });
 
 test("Plan store owns the route registry and exposes observe/verify routes", () => {
@@ -155,7 +175,12 @@ test("Source uses bounded loops and explicit safety constants", () => {
 test("Depot access joins the depot mouth to the route instead of duplicating straight track", () => {
 	const program = readFileSync(join(gameDir, "build_program.nut"), "utf8");
 	assert.match(program, /ops\.append\(depot\.access_op\)/);
-	assert.match(program, /access_op\s*=\s*\{[^}]*kind\s*=\s*"rail_connection"[^}]*tile\s*=\s*D4_ToTile\(front\)[^}]*prev\s*=\s*D4_ToTile\(a\)[^}]*next\s*=\s*D4_ToTile\(depot_point\)/s);
+	assert.match(program, /local access_prev = a/);
+	assert.match(program, /local access_next = depot_point/);
+	assert.match(program, /if \(access_mode == "exit_to_next"\)/);
+	assert.match(program, /access_prev = depot_point/);
+	assert.match(program, /access_next = next/);
+	assert.match(program, /access_op\s*=\s*\{[^}]*kind\s*=\s*"rail_connection"[^}]*tile\s*=\s*D4_ToTile\(front\)[^}]*prev\s*=\s*D4_ToTile\(access_prev\)[^}]*next\s*=\s*D4_ToTile\(access_next\)/s);
 	assert.doesNotMatch(program, /access\s*=\s*\[a,\s*front\]/);
 	assert.match(program, /foreach \(return_point in paired\.return_lane\) occupied\[D4_PointKey\(return_point\)\] <- true/);
 	assert.match(program, /if \(occupied != null && D4_PointKey\(depot_point\) in occupied\) continue/);
@@ -186,7 +211,7 @@ test("Single-shuttle routing uses the real station tiles as endpoint context", (
   assert.match(program, /first_rail\.prev = source_station\.tile/);
   assert.match(program, /last_rail\.next = destination_station\.tile/);
   assert.match(store, /if \(D4_UpgradeBuildProgram\(plan\)\)/);
-  assert.match(version, /DIRECTORATE_M4_BUILD_PROGRAM_VERSION <- 2/);
+  assert.match(version, /DIRECTORATE_M4_BUILD_PROGRAM_VERSION <- 3/);
   const gate = readFileSync("tests/integration/directorate-real-engine-gate.mjs", "utf8");
   assert.match(gate, /migration_safety_probe/);
   assert.match(gate, /all_rejected/);
@@ -203,6 +228,11 @@ test("Through-hub blueprint is populated in every definition table", () => {
   assert.match(blueprint, /defs\[name\]\.tiles = tiles;/);
   assert.match(blueprint, /ports\.throat_ne\.append\(\{ x = platform_length, y = y \}\)/);
   assert.match(blueprint, /ports\.throat_sw\.append\(\{ x = -1, y = y \}\)/);
+  assert.match(blueprint, /platform_front/);
+  assert.match(blueprint, /platform_rear/);
+  assert.match(blueprint, /ports\.common_inbound = \[\{ x = -num_platforms - 2, y = -1 \}\]/);
+  assert.match(blueprint, /ports\.common_outbound = \[\{ x = -num_platforms - 2, y = -2 \}\]/);
+  assert.match(blueprint, /ports\.common_rear_merge = \[\{ x = platform_length \+ num_platforms, y = -1 \}\]/);
   assert.doesNotMatch(blueprint, /ports\.throat_ne\.append\(\{ x = x, y = -1 \}\)/);
   assert.doesNotMatch(blueprint, /function D4_SetupThroughHub\(\)\s*\{\s*local defs = D4_GetBlueprintDefinitions\(\)/);
   assert.doesNotMatch(blueprint, /\nD4_SetupThroughHub\(\);/);
@@ -229,25 +259,48 @@ test("Paired corridors emit bounded one-way PBS signals while staged single trac
   assert.match(program, /paired_mode = !single_shuttle && !initial_single_track/);
 });
 
-test("Paired corridor connects its outbound lane to both station platforms", () => {
+test("Paired corridor connects through-hub endpoints through common fan and merge topology", () => {
   const program = readFileSync(join(gameDir, "build_program.nut"), "utf8");
-  assert.match(program, /D4_NearestBlueprintPortPoint\(plan\.station_blueprint, "platform_body", start\)/);
-  assert.match(program, /D4_NearestBlueprintPortPoint\(plan\.destination_blueprint, "platform_body", goal\)/);
-  assert.match(program, /D4_AppendLaneOperations\(ops, "outbound", route\.path, source_entry, destination_exit\)/);
-  assert.match(program, /D4_AppendLaneOperations\(ops, "return", paired\.return_lane, destination_return_entry, source_return_exit\)/);
-  assert.match(program, /function D4_SelectLanePlatformEndpoint\(blueprint, lane_tile, lane_neighbor, is_entry\)/);
-  assert.match(program, /D4_IsAdjacent\(point, lane_tile\)/);
+  assert.match(program, /function D4_CompileThroughHubRoroProgram/);
+  assert.match(program, /D4_BlueprintPortLocation\(plan\.station_blueprint, "common_inbound"\)/);
+  assert.match(program, /D4_BlueprintPortLocation\(plan\.station_blueprint, "common_outbound"\)/);
+  assert.match(program, /D4_AppendThroughHubEndpoint\(ops, "source"/);
+  assert.match(program, /D4_AppendThroughHubEndpoint\(ops, "destination"/);
+  assert.match(program, /function D4_DeriveThroughHubEndpointLayout/);
+  assert.match(program, /local entry = layout\.throat_sw\[i\]/);
+  assert.match(program, /local exitp = layout\.throat_ne\[i\]/);
+  assert.match(program, /D4_AppendUniqueLaneOperations\(ops, prefix \+ "\.loop", layout\.loop_path/);
   assert.match(program, /foreach \(side_turns in \[1, 3\]\)/);
-  assert.match(program, /function D4_DeriveProgramLanes\(path, side_turns = 1\)/);
-  assert.match(program, /required_start_dir = D4_DirectionBetween\(source_entry, start\)/);
-  assert.match(program, /required_goal_dir = D4_DirectionBetween\(goal, destination_exit\)/);
+  assert.match(program, /D4_DeriveProgramLanes\(outbound\.path, side_turns\)/);
+  assert.match(program, /through_hub_paired_lane_endpoint_mismatch/);
+  assert.match(program, /through_hub_source_exit_heading_mismatch/);
+  assert.match(program, /through_hub_destination_exit_heading_mismatch/);
+  assert.match(program, /source_manifest\.manifest\.loop_exit_heading/);
+  assert.match(program, /dest_manifest\.manifest\.fan_entry_heading/);
+  assert.match(program, /D4_DepotOperation\(returned\.return_lane, occupied, true, "exit_to_next"\)/);
+  assert.doesNotMatch(program, /local returned = D4_BuildLegalCenterline\(dest_out, source_in/);
+  assert.match(program, /kind = "through_hub_roro"/);
+  assert.match(program, /signals = D4_ProgramSignalManifest\(ops\)/);
+  assert.match(program, /fingerprint = D4_BoundedFingerprint\(\{ topology = topology/);
   assert.match(program, /function D4_SelectBestSitePair\(source_candidates, destination_candidates, excluded = null\)/);
   assert.match(program, /pair_key in excluded/);
-  assert.match(program, /node\.steps == 0 && required_start_dir >= 0 && dir != required_start_dir/);
-  assert.match(program, /next\.x == goal\.x && next\.y == goal\.y[\s\S]*required_goal_dir >= 0 && dir != required_goal_dir/);
-  assert.match(program, /function D4_PointInStationRect\(point, station\)/);
-  assert.match(program, /D4_PointInStationRect\(rail\.prev_point, station\)/);
-  assert.match(program, /D4_PointInStationRect\(rail\.next_point, station\)/);
+  assert.match(program, /source_layout\.loop_exit_heading != source_to_destination/);
+  assert.match(program, /function D4_VerifyThroughHubEndpointTopology/);
+  assert.match(program, /function D4_IsSafeThroughHubTopology/);
+  assert.match(program, /function D4_IsSafeSignalManifest/);
+  assert.match(program, /entry_not_common_inbound/);
+  assert.match(program, /entry_not_adjacent_platform/);
+  assert.match(program, /entry_platform_duplicate/);
+  assert.match(program, /exit_not_common_rear_merge/);
+  assert.match(program, /exit_not_adjacent_platform/);
+  assert.match(program, /exit_platform_duplicate/);
+  assert.match(program, /loop_not_common_outbound/);
+  assert.match(program, /loop_exit_heading_mismatch/);
+  assert.match(program, /fan_entry_heading_mismatch/);
+  assert.match(program, /function D4_VerifyThroughHubTrunks/);
+  assert.match(program, /outbound_not_source_common_exit/);
+  assert.match(program, /return_not_source_common_entry/);
+  assert.match(program, /signal_missing_or_wrong_facing/);
   assert.doesNotMatch(program, /rail\.prev == station\.tile/);
   assert.doesNotMatch(program, /rail\.next == station\.tile/);
 });

@@ -66,12 +66,18 @@ function D4_SurveyStationSites(company_id, industry_id, role, blueprint_name, in
 	}
 	candidates.sort(D4_SiteCompare);
 	local top = [];
-	/* Preserve the best candidate for every cardinal orientation. Returning
-	 * only the globally top-scored ties can accidentally contain three copies
-	 * of one orientation, leaving no station throat that faces its peer. */
-	for (local rotation = 0; rotation < 4 && top.len() < DIRECTORATE_M4_MAX_SITES; rotation++) {
-		for (local i = 0; i < candidates.len(); i++) {
-			if (candidates[i].rotation == rotation) { top.append(candidates[i]); break; }
+	/* Preserve several ranked candidates for every cardinal orientation. A
+	 * single candidate per rotation leaves no terrain alternative when the
+	 * geometrically correct mirrored pair produces an unusable paired-lane
+	 * offset. Interleave orientations so the bounded list stays balanced. */
+	for (local rank = 0; rank < 4 && top.len() < DIRECTORATE_M4_MAX_SITES; rank++) {
+		for (local rotation = 0; rotation < 4 && top.len() < DIRECTORATE_M4_MAX_SITES; rotation++) {
+			local seen_for_rotation = 0;
+			for (local i = 0; i < candidates.len(); i++) {
+				if (candidates[i].rotation != rotation) continue;
+				if (seen_for_rotation == rank) { top.append(candidates[i]); break; }
+				seen_for_rotation++;
+			}
 		}
 	}
 	return { ok = true, industry_id = industry_id, industry_location = industry_location, candidates = top, rejected = rejected_count + candidates.len() - top.len(), rejected_reasons = rejected_reasons };

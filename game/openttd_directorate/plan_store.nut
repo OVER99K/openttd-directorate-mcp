@@ -40,7 +40,7 @@ class DirectorateM4PlanStore {
 				plan.updated_tick = D4_Tick();
 				GSLog.Info("D4 M4 upgraded build program " + id + " to v" + DIRECTORATE_M4_BUILD_PROGRAM_VERSION);
 			}
-			if (D4_Has(plan, "build_program") && D4_IsTable(plan.build_program) && D4_Has(plan.build_program, "ok") && plan.build_program.ok && (!D4_Has(plan.build_program, "version") || plan.build_program.version != DIRECTORATE_M4_BUILD_PROGRAM_VERSION)) { GSLog.Warning("D4 M4 plan-store load rejected unmigrated plan " + id); continue; }
+			if (D4_Has(plan, "build_program") && D4_IsTable(plan.build_program) && D4_Has(plan.build_program, "ok") && plan.build_program.ok && (!D4_Has(plan.build_program, "version") || !D4_IsAcceptedBuildProgramVersion(plan.build_program.version, false))) { GSLog.Warning("D4 M4 plan-store load rejected unmigrated plan " + id); continue; }
 			loaded[id] <- plan;
 			loaded_order.append(id);
 		}
@@ -364,7 +364,7 @@ class DirectorateM4PlanStore {
 		if (!("updated_tick" in plan) || typeof plan.updated_tick != "integer") return false;
 		if (!D4_Has(plan, "build_program")) plan.build_program <- { ok = false };
 		if (D4_IsTable(plan.build_program) && D4_Has(plan.build_program, "ok") && plan.build_program.ok) {
-			if (!D4_Has(plan.build_program, "version") || (plan.build_program.version != DIRECTORATE_M4_BUILD_PROGRAM_VERSION && !(allow_legacy && plan.build_program.version == 1))) return false;
+			if (!D4_Has(plan.build_program, "version") || !D4_IsAcceptedBuildProgramVersion(plan.build_program.version, allow_legacy)) return false;
 			if (!D4_Has(plan.build_program, "ops") || !D4_IsArray(plan.build_program.ops) || plan.build_program.ops.len() > DIRECTORATE_M4_MAX_OPERATION_ENTRIES) return false;
 			if (!D4_Has(plan.build_program, "path") || !D4_IsArray(plan.build_program.path) || plan.build_program.path.len() < 2 || plan.build_program.path.len() > DIRECTORATE_M4_MAX_OPERATION_ENTRIES) return false;
 			if (!D4_IsPointOnMap(plan.build_program.path[0]) || !D4_IsPointOnMap(plan.build_program.path[plan.build_program.path.len() - 1])) return false;
@@ -372,6 +372,7 @@ class DirectorateM4PlanStore {
 				if (!D4_IsArray(plan.build_program.return_lane) || plan.build_program.return_lane.len() > DIRECTORATE_M4_MAX_OPERATION_ENTRIES) return false;
 
 			}
+			if (plan.build_program.version == DIRECTORATE_M4_BUILD_PROGRAM_VERSION && D4_IsThroughHubBlueprint(plan.station_blueprint) && (!D4_Has(plan.build_program, "topology") || !D4_IsSafeThroughHubTopology(plan.build_program.topology))) return false;
 			if (validate_program) {
 				local validation = D4_ValidateBuildProgram(plan.build_program.ops);
 				if (!validation.ok) return false;
@@ -407,6 +408,10 @@ class DirectorateM4PlanStore {
 		}
 		this.order = compact;
 	}
+}
+
+function D4_IsAcceptedBuildProgramVersion(version, allow_legacy_v1) {
+	return version == DIRECTORATE_M4_BUILD_PROGRAM_VERSION || version == 2 || (allow_legacy_v1 && version == 1);
 }
 
 function D4_BuildPairedTrunk(source_site, dest_site) {

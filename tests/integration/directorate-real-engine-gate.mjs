@@ -108,6 +108,73 @@ function writeConfig() {
 \t\t\t}
 \t\t\treturn { ok = false, error = D4_Error("probe_signal_unbuildable", "") };
 \t\t}
+\t\tif (payload.command == "through_hub_topology_probe") {
+\t\t\tlocal mode = GSCompanyMode(payload.company_id);
+\t\t\tlocal plan = this.store.GetPlan(payload.params.plan_id);
+\t\t\tif (!GSCompanyMode.IsValid() || plan == null || !D4_Has(plan, "build_program") || !D4_Has(plan.build_program, "topology")) return { ok = false, error = D4_Error("probe_through_hub_missing", payload.params.plan_id) };
+\t\t\tlocal program = plan.build_program;
+\t\t\tlocal topology = program.topology;
+\t\t\tlocal source_station = program.ops[0];
+\t\t\tlocal destination_station = program.ops[1];
+\t\t\tlocal failures = [];
+\t\t\tif (source_station.num_platforms != 2 || source_station.platform_length != 4) failures.append("source_rect_not_2x4");
+\t\t\tif (destination_station.num_platforms != 2 || destination_station.platform_length != 4) failures.append("destination_rect_not_2x4");
+\t\t\tif (topology.kind != "through_hub_roro") failures.append("not_through_hub_roro");
+\t\t\tforeach (label, endpoint in { source = topology.source, destination = topology.destination }) {
+\t\t\t\tif (endpoint.entries.len() != 2 || endpoint.exits.len() != 2) failures.append(label + "_platform_count");
+\t\t\t\tfor (local i = 0; i < endpoint.entries.len(); i++) {
+\t\t\t\t\tlocal entry = endpoint.entries[i];
+\t\t\t\t\tlocal exitp = endpoint.exits[i];
+\t\t\t\t\tif (D4_PointKey(entry.path[0]) != D4_PointKey(endpoint.common_inbound)) failures.append(label + "_entry_not_common");
+\t\t\t\t\tif (D4_PointKey(entry.path[entry.path.len() - 1]) != D4_PointKey(entry.entry)) failures.append(label + "_entry_not_throat");
+\t\t\t\t\tif (D4_PointKey(exitp.path[0]) != D4_PointKey(exitp.exit)) failures.append(label + "_exit_not_throat");
+\t\t\t\t\tif (D4_PointKey(exitp.path[exitp.path.len() - 1]) != D4_PointKey(endpoint.common_rear_merge)) failures.append(label + "_exit_not_merge");
+\t\t\t\t\tif (!D4_VerifyProgramPathConnections(entry.path, null, entry.platform)) failures.append(label + "_entry_disconnected");
+\t\t\t\t\tif (!D4_VerifyProgramPathConnections(exitp.path, exitp.platform, null)) failures.append(label + "_exit_disconnected");
+\t\t\t\t}
+\t\t\t\tif (!D4_VerifyProgramPathConnections(endpoint.loop_path, null, null)) failures.append(label + "_loop_disconnected");
+\t\t\t\tif (D4_PointKey(endpoint.loop_path[endpoint.loop_path.len() - 1]) != D4_PointKey(endpoint.common_outbound)) failures.append(label + "_loop_not_outbound");
+\t\t\t\tif (D4_DirectionBetween(endpoint.loop_path[endpoint.loop_path.len() - 2], endpoint.common_outbound) != endpoint.loop_exit_heading) failures.append(label + "_loop_heading");
+\t\t\t\tif (D4_DirectionBetween(endpoint.common_inbound, endpoint.fan_backbone[1]) != endpoint.fan_entry_heading) failures.append(label + "_fan_heading");
+\t\t\t}
+\t\t\tlocal trunks = D4_VerifyThroughHubTrunks(topology);
+\t\t\tif (!trunks.ok) failures.append("trunks_failed");
+\t\t\tlocal signals = 0;
+\t\t\tforeach (op in program.ops) if (op.kind == "signal") signals++;
+\t\t\tif (!D4_Has(topology, "signals") || topology.signals.len() != signals) failures.append("signal_manifest_mismatch");
+\t\t\tif (signals < 8) failures.append("signals_missing");
+\t\t\treturn { ok = failures.len() == 0, payload = { failures = failures, source_rect = { platforms = source_station.num_platforms, length = source_station.platform_length }, destination_rect = { platforms = destination_station.num_platforms, length = destination_station.platform_length }, source_entries = topology.source.entries.len(), destination_entries = topology.destination.entries.len(), source_loop_exit_heading = topology.source.loop_exit_heading, destination_loop_exit_heading = topology.destination.loop_exit_heading, source_fan_entry_heading = topology.source.fan_entry_heading, destination_fan_entry_heading = topology.destination.fan_entry_heading, signals = signals, signal_manifest = D4_Has(topology, "signals") ? topology.signals.len() : -1 } };
+\t\t}
+\t\tif (payload.command == "through_hub_runtime_probe") {
+\t\t\tlocal mode = GSCompanyMode(payload.company_id);
+\t\t\tif (!GSCompanyMode.IsValid() || !D4_Has(payload, "params") || !D4_Has(payload.params, "route_ids") || !D4_IsArray(payload.params.route_ids)) return { ok = false, error = D4_Error("runtime_probe_invalid", "") };
+\t\t\tlocal rows = [];
+\t\t\tfor (local ri = 0; ri < payload.params.route_ids.len() && ri < 8; ri++) {
+\t\t\t\tlocal route_id = payload.params.route_ids[ri];
+\t\t\t\tlocal route = this.store.registry.Get(route_id);
+\t\t\t\tif (route == null || route.topology == null) { rows.append({ route_id = route_id, ok = false }); continue; }
+\t\t\t\tlocal source_platform_rows = {};
+\t\t\t\tlocal destination_platform_rows = {};
+\t\t\t\tlocal source_egress_rows = {};
+\t\t\t\tlocal destination_egress_rows = {};
+\t\t\t\tfor (local i = 0; i < route.topology.source.entries.len(); i++) source_platform_rows[D4_ToTile(route.topology.source.entries[i].platform)] <- i;
+\t\t\t\tfor (local j = 0; j < route.topology.destination.entries.len(); j++) destination_platform_rows[D4_ToTile(route.topology.destination.entries[j].platform)] <- j;
+\t\t\t\tfor (local k = 0; k < route.topology.source.exits.len(); k++) source_egress_rows[D4_ToTile(route.topology.source.exits[k].exit)] <- k;
+\t\t\t\tfor (local m = 0; m < route.topology.destination.exits.len(); m++) destination_egress_rows[D4_ToTile(route.topology.destination.exits[m].exit)] <- m;
+\t\t\t\tlocal vehicles = [];
+\t\t\t\tforeach (entry in route.vehicles) {
+\t\t\t\t\tif (!GSVehicle.IsValidVehicle(entry.vehicle_id)) { vehicles.append({ vehicle_id = entry.vehicle_id, valid = false }); continue; }
+\t\t\t\t\tlocal location = GSVehicle.GetLocation(entry.vehicle_id);
+\t\t\t\t\tlocal source_row = location in source_platform_rows ? source_platform_rows[location] : -1;
+\t\t\t\t\tlocal destination_row = location in destination_platform_rows ? destination_platform_rows[location] : -1;
+\t\t\t\t\tlocal source_egress_row = location in source_egress_rows ? source_egress_rows[location] : -1;
+\t\t\t\t\tlocal destination_egress_row = location in destination_egress_rows ? destination_egress_rows[location] : -1;
+\t\t\t\t\tvehicles.append({ vehicle_id = entry.vehicle_id, valid = true, location = location, current_order = GSOrder.ResolveOrderPosition(entry.vehicle_id, GSOrder.ORDER_CURRENT), load = GSVehicle.GetCargoLoad(entry.vehicle_id, route.cargo_type), profit_last_year = GSVehicle.GetProfitLastYear(entry.vehicle_id), profit_this_year = GSVehicle.GetProfitThisYear(entry.vehicle_id), source_row = source_row, destination_row = destination_row, source_egress_row = source_egress_row, destination_egress_row = destination_egress_row });
+\t\t\t\t}
+\t\t\t\trows.append({ route_id = route_id, ok = true, vehicles = vehicles });
+\t\t\t}
+\t\t\treturn { ok = true, payload = { tick = D4_Tick(), routes = rows } };
+\t\t}
 \t\tif (payload.command == "migration_safety_probe") {
 \t\t\tlocal original = this.store.GetPlan(payload.params.plan_id);
 \t\t\tif (original == null) return { ok = false, error = D4_Error("probe_plan_missing", payload.params.plan_id) };
@@ -243,6 +310,69 @@ function assertRouteCommissioned(name, response) {
   return response;
 }
 
+function updateRuntimeHistory(history, probe) {
+  const tick = probe?.payload?.tick ?? 0;
+  for (const route of probe?.payload?.routes ?? []) {
+    if (!route?.ok || typeof route.route_id !== "string") continue;
+    const row = history.get(route.route_id) ?? {
+      sourceRows: new Set(),
+      destinationRows: new Set(),
+      rearEgressRows: new Set(),
+      deliveries: 0,
+      vehicles: new Map(),
+      snapshots: [],
+    };
+    for (const vehicle of route.vehicles ?? []) {
+      if (!vehicle?.valid || !Number.isInteger(vehicle.vehicle_id)) continue;
+      if (vehicle.source_row >= 0) row.sourceRows.add(vehicle.source_row);
+      if (vehicle.destination_row >= 0) row.destinationRows.add(vehicle.destination_row);
+      if (vehicle.source_egress_row >= 0) row.rearEgressRows.add(`source:${vehicle.source_egress_row}`);
+      if (vehicle.destination_egress_row >= 0) row.rearEgressRows.add(`destination:${vehicle.destination_egress_row}`);
+      const previous = row.vehicles.get(vehicle.vehicle_id);
+      const profit = (vehicle.profit_last_year ?? 0) + (vehicle.profit_this_year ?? 0);
+      if (previous && vehicle.destination_row >= 0 && profit > previous.profit && (previous.load > 0 || vehicle.load === 0)) row.deliveries += 1;
+      row.vehicles.set(vehicle.vehicle_id, { load: vehicle.load ?? 0, profit });
+      row.snapshots.push({
+        tick,
+        vehicle_id: vehicle.vehicle_id,
+        location: vehicle.location,
+        current_order: vehicle.current_order,
+        load: vehicle.load,
+        source_row: vehicle.source_row,
+        destination_row: vehicle.destination_row,
+        source_egress_row: vehicle.source_egress_row,
+        destination_egress_row: vehicle.destination_egress_row,
+        profit,
+      });
+      if (row.snapshots.length > 64) row.snapshots.shift();
+    }
+    history.set(route.route_id, row);
+  }
+}
+
+function runtimeHistorySummary(history) {
+  return Object.fromEntries(
+    [...history].map(([routeId, row]) => [
+      routeId,
+      {
+        source_rows: [...row.sourceRows].sort(),
+        destination_rows: [...row.destinationRows].sort(),
+        rear_egress_rows: [...row.rearEgressRows].sort(),
+        deliveries: row.deliveries,
+        snapshots: row.snapshots.slice(-12),
+      },
+    ]),
+  );
+}
+
+function gitOutput(args, fallback = "") {
+  const result = spawnSync("git", args, { cwd: repoRoot, encoding: "utf8" });
+  if (typeof result.stdout === "string" && result.stdout.trim().length > 0) return result.stdout.trim();
+  if (result.error) return fallback;
+  if (result.status !== 0) return fallback;
+  return "";
+}
+
 async function withServer(loadGame, fn) {
   serverRun += 1;
   const runLogPath = `${logPath}.${serverRun}`;
@@ -310,8 +440,8 @@ async function main() {
     openttd_version: openttdVersion,
     openttd_sha256: createHash("sha256").update(readFileSync(openttd)).digest("hex"),
     opengfx: openGfx,
-    source_commit: execFileSync("git", ["rev-parse", "HEAD"], { cwd: repoRoot, encoding: "utf8" }).trim(),
-    source_dirty: execFileSync("git", ["status", "--porcelain"], { cwd: repoRoot, encoding: "utf8" }).trim().length > 0,
+    source_commit: gitOutput(["rev-parse", "HEAD"], "unknown"),
+    source_dirty: gitOutput(["status", "--porcelain"], "").length > 0,
     port,
     game_port: gamePort,
     steps: [],
@@ -327,7 +457,7 @@ async function main() {
         password,
         name: "directorate real-engine gate",
         version: "0.1.0",
-        requestTimeoutMs: 120000,
+        requestTimeoutMs: 300000,
         connectTimeoutMs: 10000,
         pingIntervalMs: 0,
         reconnect: { enabled: false, maxAttempts: 0, initialDelayMs: 100, maxDelayMs: 100 },
@@ -357,11 +487,14 @@ async function main() {
         plan_id: "directorate-gate-plan",
         intent: { source_industry_id: 0, destination_industry_id: 1 },
         policy: {
-          station_template: "single_shuttle_1xN",
-          site_search_radius: 2,
-          route_expansion_limit: 768,
-          route_frontier_limit: 4096,
+          station_template: "through_hub_2x4",
+          site_search_radius: 6,
+          site_pair_skip: 1,
+          route_expansion_limit: 2048,
+          route_frontier_limit: 8192,
+          route_turn_cost: 50,
           wagon_count: 1,
+          signals: true,
         },
       });
       evidence.steps.push({ name: "plan", response: assertOk("plan", plan) });
@@ -400,6 +533,20 @@ async function main() {
       }));
       evidence.steps.push({ name: "commit", response: commit });
       commitRevision = commit.payload?.revision ?? revision + 1;
+
+      const throughHubProbeWire = await client.requestGameScript("execute", {
+        company_id: 0,
+        command: "through_hub_topology_probe",
+        params: { plan_id: "directorate-gate-plan" },
+      });
+      const throughHubProbe = assertOk("through_hub_topology_probe", throughHubProbeWire.payload);
+      if (throughHubProbe.payload?.source_rect?.platforms !== 2 || throughHubProbe.payload?.source_rect?.length !== 4 || throughHubProbe.payload?.destination_rect?.platforms !== 2 || throughHubProbe.payload?.destination_rect?.length !== 4) {
+        throw new Error(`through-hub station rectangles are not 2x4: ${JSON.stringify(throughHubProbe)}`);
+      }
+      if (throughHubProbe.payload?.source_entries !== 2 || throughHubProbe.payload?.destination_entries !== 2) {
+        throw new Error(`through-hub fan/merge distribution missing rows: ${JSON.stringify(throughHubProbe)}`);
+      }
+      evidence.steps.push({ name: "through_hub_topology_probe", response: throughHubProbeWire });
 
       const signalProbeWire = await client.requestGameScript("execute", {
         company_id: 0,
@@ -470,11 +617,23 @@ async function main() {
       }
       evidence.steps.push({ name: "commission_route", response: commission });
 
+      const secondCommission = assertRouteCommissioned(
+        "commission_route_second_train",
+        await request(handlers, "commission", {
+          company_id: 0,
+          plan_id: "directorate-gate-plan",
+          route_id: "directorate-gate-route-second",
+          cargo_label: "",
+        }),
+      );
+      evidence.steps.push({ name: "commission_route_second_train", response: secondCommission });
+
       const observeRoutes = assertOk("observe_routes", await request(handlers, "observe", { scope: "routes", company_id: 0, limit: 16 }));
       const routes = observeRoutes.payload?.routes ?? [];
       const commissionedRoute = routes.find((route) => route?.route_id === "directorate-gate-route");
+      const commissionedSecondRoute = routes.find((route) => route?.route_id === "directorate-gate-route-second");
       const blockedRoute = routes.find((route) => route?.route_id === "directorate-gate-route-blocked-stock");
-      if (commissionedRoute?.state !== "commissioned" || blockedRoute?.state !== "failed") throw new Error(`expected commissioned and safely blocked routes: ${JSON.stringify(routes)}`);
+      if (commissionedRoute?.state !== "commissioned" || commissionedSecondRoute?.state !== "commissioned" || blockedRoute?.state !== "failed") throw new Error(`expected two commissioned and one safely blocked route: ${JSON.stringify(routes)}`);
       evidence.steps.push({ name: "observe_routes", response: observeRoutes });
 
       const verifyTopology = assertOk("verify_topology", await request(handlers, "verify", { company_id: 0, route_id: "directorate-gate-route", level: "topology" }));
@@ -484,6 +643,10 @@ async function main() {
       const verifyCommissioning = assertOk("verify_commissioning", await request(handlers, "verify", { company_id: 0, route_id: "directorate-gate-route", level: "commissioning" }));
       if (verifyCommissioning.ok !== true) throw new Error(`commissioning verify failed: ${JSON.stringify(verifyCommissioning)}`);
       evidence.steps.push({ name: "verify_commissioning", response: verifyCommissioning });
+
+      const verifySecondCommissioning = assertOk("verify_second_commissioning", await request(handlers, "verify", { company_id: 0, route_id: "directorate-gate-route-second", level: "commissioning" }));
+      if (verifySecondCommissioning.ok !== true) throw new Error(`second commissioning verify failed: ${JSON.stringify(verifySecondCommissioning)}`);
+      evidence.steps.push({ name: "verify_second_commissioning", response: verifySecondCommissioning });
 
       const verifyOperationCommit = await request(handlers, "verify", {
         company_id: 0,
@@ -501,18 +664,33 @@ async function main() {
 
       evidence.steps.push({ name: "fastforward_on", response: await client.rcon("fastforward") });
       let profitable = false;
+      const runtimeHistory = new Map();
       for (let attempt = 0; attempt < 24; attempt++) {
         await delay(5000);
+        const runtimeProbeWire = await client.requestGameScript("execute", {
+          company_id: 0,
+          command: "through_hub_runtime_probe",
+          params: { route_ids: ["directorate-gate-route", "directorate-gate-route-second"] },
+        });
+        const runtimeProbe = assertOk("through_hub_runtime_probe", runtimeProbeWire.payload);
+        updateRuntimeHistory(runtimeHistory, runtimeProbe);
         const poll = await request(handlers, "verify", { company_id: 0, route_id: "directorate-gate-route", level: "economic" });
-        if (typeof poll.payload?.health?.positive_revenue !== "boolean") throw new Error(`verify_economic_poll missing health: ${JSON.stringify(poll)}`);
-        if (poll.ok === true && poll.payload.health.positive_revenue === true) {
-          evidence.steps.push({ name: "verify_economic_profitable", attempt, response: poll });
+        const secondPoll = await request(handlers, "verify", { company_id: 0, route_id: "directorate-gate-route-second", level: "economic" });
+        if (typeof poll.payload?.health?.positive_revenue !== "boolean" || typeof secondPoll.payload?.health?.positive_revenue !== "boolean") throw new Error(`verify_economic_poll missing health: ${JSON.stringify({ poll, secondPoll })}`);
+        if (attempt % 4 === 0 || attempt === 23 || poll.ok === true || secondPoll.ok === true) evidence.steps.push({ name: "verify_economic_runtime_poll", attempt, first: poll, second: secondPoll, runtime: runtimeProbeWire });
+        if (poll.ok === true && poll.payload.health.positive_revenue === true && secondPoll.ok === true && secondPoll.payload.health.positive_revenue === true) {
+          evidence.steps.push({ name: "verify_economic_both_profitable", attempt, first: poll, second: secondPoll });
           profitable = true;
           break;
         }
       }
       evidence.steps.push({ name: "fastforward_off", response: await client.rcon("fastforward") });
-      if (!profitable) throw new Error(`route did not become profitable within poll window`);
+      if (!profitable) throw new Error(`both routes did not become profitable within poll window`);
+      const runtimeSummary = runtimeHistorySummary(runtimeHistory);
+      evidence.steps.push({ name: "through_hub_runtime_history", response: runtimeSummary });
+      const totalDeliveries = Object.values(runtimeSummary).reduce((sum, route) => sum + route.deliveries, 0);
+      const usedRows = new Set(Object.values(runtimeSummary).flatMap((route) => [...route.source_rows, ...route.destination_rows]));
+      if (totalDeliveries < 2 || usedRows.size < 2) throw new Error(`runtime did not prove two deliveries across both platform rows: ${JSON.stringify(runtimeSummary)}`);
 
       const verifyEconomicAfter = assertOk("verify_economic_after_travel", await request(handlers, "verify", { company_id: 0, route_id: "directorate-gate-route", level: "economic" }));
       if (verifyEconomicAfter.payload?.health?.vehicle_running !== true) throw new Error(`vehicle not running after travel: ${JSON.stringify(verifyEconomicAfter)}`);
@@ -541,7 +719,7 @@ async function main() {
         password,
         name: "directorate real-engine gate restart",
         version: "0.1.0",
-        requestTimeoutMs: 120000,
+        requestTimeoutMs: 300000,
         connectTimeoutMs: 10000,
         pingIntervalMs: 0,
         reconnect: { enabled: false, maxAttempts: 0, initialDelayMs: 100, maxDelayMs: 100 },
@@ -586,11 +764,23 @@ async function main() {
       }
       evidence.steps.push({ name: "commission_replay_after_restart", response: replayCommission });
 
+      const replaySecondCommission = await request(replayHandlers, "commission", {
+        company_id: 0,
+        plan_id: "directorate-gate-plan",
+        route_id: "directorate-gate-route-second",
+        cargo_label: "",
+      });
+      if (replaySecondCommission.payload?.note !== "idempotent") {
+        throw new Error(`second commission replay not idempotent: ${JSON.stringify(replaySecondCommission)}`);
+      }
+      evidence.steps.push({ name: "commission_second_replay_after_restart", response: replaySecondCommission });
+
       const observeAfterRestart = assertOk("observe_routes_after_restart", await request(replayHandlers, "observe", { scope: "routes", company_id: 0, limit: 16 }));
       const afterRoutes = observeAfterRestart.payload?.routes ?? [];
       const persistedCommissioned = afterRoutes.find((route) => route?.route_id === "directorate-gate-route");
+      const persistedSecondCommissioned = afterRoutes.find((route) => route?.route_id === "directorate-gate-route-second");
       const persistedBlocked = afterRoutes.find((route) => route?.route_id === "directorate-gate-route-blocked-stock");
-      if (persistedCommissioned?.state !== "commissioned" || persistedBlocked?.state !== "failed") throw new Error(`expected persisted commissioned and blocked routes after restart, got ${JSON.stringify(afterRoutes)}`);
+      if (persistedCommissioned?.state !== "commissioned" || persistedSecondCommissioned?.state !== "commissioned" || persistedBlocked?.state !== "failed") throw new Error(`expected persisted commissioned and blocked routes after restart, got ${JSON.stringify(afterRoutes)}`);
       evidence.steps.push({ name: "observe_routes_after_restart", response: observeAfterRestart });
 
       const verifyAfterRestart = assertOk("verify_topology_after_restart", await request(replayHandlers, "verify", { company_id: 0, route_id: "directorate-gate-route", level: "topology" }));

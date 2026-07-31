@@ -1,0 +1,24 @@
+{
+  "plan_id": "fixture-v2-through-hub",
+  "revision": 3,
+  "company_id": 0,
+  "state": "applied",
+  "phase": "applied",
+  "intent": { "source_industry_id": 10, "destination_industry_id": 20 },
+  "policy": { "station_template": "through_hub_4x7", "signals": true },
+  "precondition_fingerprint": "fixture-v2",
+  "created_tick": 100,
+  "updated_tick": 200,
+  "station_blueprint": { "ok": true, "name": "through_hub_4x7" },
+  "build_program": {
+    "ok": true,
+    "version": 2,
+    "fingerprint": "fixture-v2-program",
+    "ops": [
+      { "op_id": "source_station", "kind": "station_rect", "tile": 1, "end_tile": 7, "direction": 0, "num_platforms": 4, "platform_length": 7, "destination_station": -1 },
+      { "op_id": "destination_station", "kind": "station_rect", "tile": 100, "end_tile": 106, "direction": 0, "num_platforms": 4, "platform_length": 7, "destination_station": 1 }
+    ],
+    "path": [{ "x": 10, "y": 10 }, { "x": 11, "y": 10 }],
+    "return_lane": [{ "x": 11, "y": 11 }, { "x": 10, "y": 11 }]
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "plan_id": "fixture-v1-malformed",
+  "revision": 0,
+  "company_id": 0,
+  "state": "ready",
+  "phase": "ready",
+  "intent": { "source_industry_id": 10, "destination_industry_id": 20 },
+  "policy": { "station_template": "single_shuttle_1xN" },
+  "precondition_fingerprint": "fixture-v1",
+  "created_tick": 100,
+  "updated_tick": 200,
+  "station_blueprint": { "ok": true, "name": "single_shuttle_1xN" },
+  "build_program": {
+    "ok": true,
+    "version": 1,
+    "fingerprint": "fixture-v1-program",
+    "ops": [{}],
+    "path": []
+  }
+}

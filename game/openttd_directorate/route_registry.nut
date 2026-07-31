@@ -81,6 +81,7 @@ class DirectorateM4RouteRegistry {
 				this_year_profit = 0,
 				lifetime_profit = 0,
 			},
+			topology = null,
 		};
 		this.routes[route_id] <- route;
 		this.order.append(route_id);
@@ -147,6 +148,8 @@ class DirectorateM4RouteRegistry {
 		if (!("commissioned_tick" in route) || typeof route.commissioned_tick != "integer") route.commissioned_tick <- 0;
 		if (!("health" in route) || !D4_IsTable(route.health)) route.health <- { topology_ok = false, orders_ok = false, vehicle_running = false, positive_revenue = false, last_check_tick = 0 };
 		if (!("economics" in route) || !D4_IsTable(route.economics)) route.economics <- { build_cost = 0, running_cost = 0, last_year_profit = 0, this_year_profit = 0, lifetime_profit = 0 };
+		if (!("topology" in route)) route.topology <- null;
+		if (route.topology != null && !D4_IsSafeThroughHubTopology(route.topology)) return false;
 		local safe_vehicles = [];
 		foreach (v in route.vehicles) {
 			if (D4_IsTable(v) && typeof v.vehicle_id == "integer" && typeof v.created_tick == "integer") safe_vehicles.append(v);
@@ -290,6 +293,7 @@ function D4_CommissionRoute(plan_store, registry, company_id, plan_id, route_id,
 	local created = registry.Create(route_id, company_id, plan_id, source_tile, dest_tile, plan.intent.source_industry_id, plan.intent.destination_industry_id, cargo_pick.cargo_type);
 	if (!created.ok) return created;
 	local route = created.route;
+	if (D4_Has(plan.build_program, "topology")) route.topology = plan.build_program.topology;
 	route.state = "commissioning";
 	local topology = D4_VerifyRouteTopology(route, company_id);
 	route.health.topology_ok = topology.ok;
@@ -328,6 +332,20 @@ function D4_VerifyRouteTopology(route, company_id) {
 	if (!GSRail.IsRailStationTile(route.destination_station_tile) || GSTile.GetOwner(route.destination_station_tile) != company_id) failures.append({ reason = "destination_station_missing", tile = route.destination_station_tile });
 	local connected = D4_AreStationsConnectedByRail(route.source_station_tile, route.destination_station_tile, company_id);
 	if (!connected) failures.append({ reason = "stations_not_connected" });
+	if (D4_Has(route, "topology") && route.topology != null && D4_IsTable(route.topology) && D4_Has(route.topology, "kind") && route.topology.kind == "through_hub_roro") {
+		local source = D4_VerifyThroughHubEndpointTopology(route.topology.source, "source");
+		if (!source.ok) {
+			foreach (f in source.failures) failures.append(f);
+		}
+		local destination = D4_VerifyThroughHubEndpointTopology(route.topology.destination, "destination");
+		if (!destination.ok) {
+			foreach (f2 in destination.failures) failures.append(f2);
+		}
+		local trunks = D4_VerifyThroughHubTrunks(route.topology);
+		if (!trunks.ok) {
+			foreach (f3 in trunks.failures) failures.append(f3);
+		}
+	}
 	return { ok = failures.len() == 0, failures = failures };
 }
 

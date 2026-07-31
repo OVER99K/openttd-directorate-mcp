@@ -232,8 +232,13 @@ function D4_SetupThroughHub(defs, name, num_platforms, platform_length) {
 	local required = [];
 	local ports = {
 		platform_body = [],
+		platform_front = [],
+		platform_rear = [],
 		throat_ne = [],
 		throat_sw = [],
+		common_inbound = [],
+		common_outbound = [],
+		common_rear_merge = [],
 		feeder_port = [],
 	};
 	for (local track = 0; track < num_platforms; track++) {
@@ -242,6 +247,8 @@ function D4_SetupThroughHub(defs, name, num_platforms, platform_length) {
 			local y = track;
 			tiles.append(D4_BlueprintTile({ x = x, y = y }, "station", { num_platforms = 1, platform_length = 1, dir = DIR_NE }));
 			ports.platform_body.append({ x = x, y = y });
+			if (cell == 0) ports.platform_front.append({ x = x, y = y });
+			if (cell == platform_length - 1) ports.platform_rear.append({ x = x, y = y });
 		}
 	}
 	/* Station tracks run along the platform-length axis. Through throats must
@@ -254,21 +261,53 @@ function D4_SetupThroughHub(defs, name, num_platforms, platform_length) {
 		required.append({ x = platform_length, y = y });
 		required.append({ x = -1, y = y });
 	}
-	for (local x = 0; x < platform_length; x++) {
-		required.append({ x = x, y = -1 });
-		required.append({ x = x, y = num_platforms });
+	ports.common_inbound = [{ x = -num_platforms - 2, y = -1 }];
+	ports.common_outbound = [{ x = -num_platforms - 2, y = -2 }];
+	ports.common_rear_merge = [{ x = platform_length + num_platforms, y = -1 }];
+	/* Reserve the physical RoRo geometry, not its entire bounding rectangle.
+	 * The rectangular reserve rejected valid mirrored sites whenever the
+	 * serviced industry sat beside an otherwise unused corner of the envelope. */
+	for (local station_y = 0; station_y < num_platforms; station_y++) {
+		for (local station_x = 0; station_x < platform_length; station_x++) D4_AppendRequiredPoint(required, { x = station_x, y = station_y });
 	}
-	for (local x = 1; x < platform_length - 1; x++) {
-		required.append({ x = x, y = -2 });
-		required.append({ x = x, y = num_platforms + 1 });
+	/* Shared diagonal entry fan and each horizontal platform branch. */
+	D4_AppendRequiredPoint(required, { x = -num_platforms - 2, y = -1 });
+	for (local fan_row = 0; fan_row < num_platforms; fan_row++) {
+		if (fan_row == 0) {
+			D4_AppendRequiredPoint(required, { x = -num_platforms - 1, y = -1 });
+			D4_AppendRequiredPoint(required, { x = -num_platforms - 1, y = 0 });
+		} else {
+			D4_AppendRequiredPoint(required, { x = -num_platforms - 1 + fan_row, y = fan_row - 1 });
+			D4_AppendRequiredPoint(required, { x = -num_platforms - 1 + fan_row, y = fan_row });
+		}
+		for (local fan_x = -num_platforms + fan_row; fan_x <= -1; fan_x++) D4_AppendRequiredPoint(required, { x = fan_x, y = fan_row });
 	}
-	ports.feeder_port = [{ x = -1, y = 1 }, { x = -1, y = 2 }];
-	required.append({ x = -1, y = 1 });
-	required.append({ x = -1, y = 2 });
+	/* Horizontal rear branches converge onto the shared diagonal merger. */
+	for (local merge_row = 0; merge_row < num_platforms; merge_row++) {
+		for (local merge_x = platform_length; merge_x <= platform_length + num_platforms - 1 - merge_row; merge_x++) D4_AppendRequiredPoint(required, { x = merge_x, y = merge_row });
+	}
+	for (local merge_backbone_row = num_platforms - 1; merge_backbone_row > 0; merge_backbone_row--) {
+		D4_AppendRequiredPoint(required, { x = platform_length + num_platforms - merge_backbone_row, y = merge_backbone_row });
+		D4_AppendRequiredPoint(required, { x = platform_length + num_platforms - merge_backbone_row, y = merge_backbone_row - 1 });
+	}
+	D4_AppendRequiredPoint(required, { x = platform_length + num_platforms, y = 0 });
+	D4_AppendRequiredPoint(required, { x = platform_length + num_platforms, y = -1 });
+	/* Local rear turnback runs outside the platform body back to the paired port. */
+	D4_AppendRequiredPoint(required, { x = platform_length + num_platforms, y = -2 });
+	for (local loop_x = platform_length + num_platforms - 1; loop_x >= -num_platforms - 2; loop_x--) D4_AppendRequiredPoint(required, { x = loop_x, y = -2 });
+	ports.feeder_port = [{ x = -1, y = 0 }, { x = -1, y = num_platforms - 1 }];
+	foreach (feeder in ports.feeder_port) D4_AppendRequiredPoint(required, feeder);
 	defs[name].tiles = tiles;
 	defs[name].required_clear = required;
 	defs[name].allowed_existing = [];
 	defs[name].ports = ports;
+}
+
+function D4_AppendRequiredPoint(required, point) {
+	foreach (existing in required) {
+		if (existing.x == point.x && existing.y == point.y) return;
+	}
+	required.append(point);
 }
 
 function D4_PreflightBlueprint(blueprint, company_id, test_only) {

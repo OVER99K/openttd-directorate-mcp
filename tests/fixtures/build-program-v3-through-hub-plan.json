@@ -1,0 +1,43 @@
+{
+  "plan_id": "fixture-v3-through-hub",
+  "revision": 4,
+  "company_id": 0,
+  "state": "ready",
+  "phase": "ready",
+  "intent": { "source_industry_id": 10, "destination_industry_id": 20 },
+  "policy": { "station_template": "through_hub_2x4", "signals": true },
+  "precondition_fingerprint": "fixture-v3",
+  "created_tick": 100,
+  "updated_tick": 300,
+  "station_blueprint": { "ok": true, "name": "through_hub_2x4" },
+  "build_program": {
+    "ok": true,
+    "version": 3,
+    "fingerprint": "fixture-v3-program",
+    "ops": [
+      { "op_id": "source_station", "kind": "station_rect", "tile": 1, "end_tile": 4, "direction": 0, "num_platforms": 2, "platform_length": 4, "destination_station": -1 },
+      { "op_id": "destination_station", "kind": "station_rect", "tile": 100, "end_tile": 103, "direction": 0, "num_platforms": 2, "platform_length": 4, "destination_station": 1 }
+    ],
+    "path": [{ "x": 10, "y": 10 }, { "x": 11, "y": 10 }],
+    "return_lane": [{ "x": 11, "y": 11 }, { "x": 10, "y": 11 }],
+    "topology": {
+      "kind": "through_hub_roro",
+      "source": {
+        "common_inbound": { "x": 6, "y": 11 },
+        "common_outbound": { "x": 6, "y": 10 },
+        "common_rear_merge": { "x": 16, "y": 11 },
+        "entries": [],
+        "exits": []
+      },
+      "destination": {
+        "common_inbound": { "x": 11, "y": 10 },
+        "common_outbound": { "x": 11, "y": 11 },
+        "common_rear_merge": { "x": 21, "y": 10 },
+        "entries": [],
+        "exits": []
+      },
+      "outbound": [{ "x": 10, "y": 10 }, { "x": 11, "y": 10 }],
+      "return_lane": [{ "x": 11, "y": 11 }, { "x": 10, "y": 11 }]
+    }
+  }
+}

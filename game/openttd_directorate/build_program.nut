@@ -17,6 +17,9 @@ function D4_CompileBuildProgram(plan) {
 	local single_shuttle = D4_Has(plan.station_blueprint, "name") && plan.station_blueprint.name == "single_shuttle_1xN";
 	local initial_single_track = D4_Has(plan.policy, "initial_single_track") && plan.policy.initial_single_track == true;
 	local paired_mode = !single_shuttle && !initial_single_track;
+	if (paired_mode && D4_IsThroughHubBlueprint(plan.station_blueprint) && D4_IsThroughHubBlueprint(plan.destination_blueprint)) {
+		return D4_CompileThroughHubRoroProgram(plan, source_station.op, destination_station.op);
+	}
 	/* The centerline starts on the throat tile, not the station tile.  For a
 	 * shuttle, preserve the actual station tiles as the predecessor/successor
 	 * context in the emitted endpoint primitives.  Apply preflight tests those
@@ -119,6 +122,292 @@ function D4_AppendLaneSignals(ops, prefix, path, spacing, excluded) {
 	return count;
 }
 
+function D4_IsThroughHubBlueprint(blueprint) {
+	return D4_IsTable(blueprint) && D4_Has(blueprint, "name") && (blueprint.name == "through_hub_2x4" || blueprint.name == "through_hub_4x7");
+}
+
+function D4_CompileThroughHubRoroProgram(plan, source_station, destination_station) {
+	local ops = [source_station, destination_station];
+	local source_in = D4_BlueprintPortLocation(plan.station_blueprint, "common_inbound");
+	local source_out = D4_BlueprintPortLocation(plan.station_blueprint, "common_outbound");
+	local dest_in = D4_BlueprintPortLocation(plan.destination_blueprint, "common_inbound");
+	local dest_out = D4_BlueprintPortLocation(plan.destination_blueprint, "common_outbound");
+	if (source_in == null || source_out == null || dest_in == null || dest_out == null) return { ok = false, error = D4_Error("program_missing_common_ports", "") };
+	local emitted_rails = {};
+	local source_manifest = D4_AppendThroughHubEndpoint(ops, "source", plan.station_blueprint, source_in, source_out, plan.company_id, plan.policy, emitted_rails);
+	if (!source_manifest.ok) return source_manifest;
+	local dest_manifest = D4_AppendThroughHubEndpoint(ops, "destination", plan.destination_blueprint, dest_in, dest_out, plan.company_id, plan.policy, emitted_rails);
+	if (!dest_manifest.ok) return dest_manifest;
+	local source_to_dest = D4_DominantDirection(source_out, dest_in);
+	local dest_to_source = D4_DominantDirection(dest_out, source_in);
+	if (source_manifest.manifest.loop_exit_heading != source_to_dest) return { ok = false, error = D4_Error("through_hub_source_exit_heading_mismatch", D4_DirName(source_manifest.manifest.loop_exit_heading) + ":" + D4_DirName(source_to_dest)) };
+	if (dest_manifest.manifest.loop_exit_heading != dest_to_source) return { ok = false, error = D4_Error("through_hub_destination_exit_heading_mismatch", D4_DirName(dest_manifest.manifest.loop_exit_heading) + ":" + D4_DirName(dest_to_source)) };
+	local outbound = D4_BuildLegalCenterline(source_out, dest_in, plan.company_id, plan.policy, source_manifest.manifest.loop_exit_heading, dest_manifest.manifest.fan_entry_heading, 4, 50);
+	if (!outbound.ok) return outbound;
+	local returned = null;
+	local lane_diagnostics = "";
+	foreach (side_turns in [1, 3]) {
+		local candidate = D4_DeriveProgramLanes(outbound.path, side_turns);
+		if (!candidate.ok) { lane_diagnostics += "side=" + side_turns + ":derive_failed;"; continue; }
+		local start_ok = D4_PointKey(candidate.return_lane[0]) == D4_PointKey(dest_out);
+		local end_ok = D4_PointKey(candidate.return_lane[candidate.return_lane.len() - 1]) == D4_PointKey(source_in);
+		local start_heading = D4_DirectionBetween(candidate.return_lane[0], candidate.return_lane[1]);
+		local end_heading = D4_DirectionBetween(candidate.return_lane[candidate.return_lane.len() - 2], candidate.return_lane[candidate.return_lane.len() - 1]);
+		local start_heading_ok = start_heading == dest_manifest.manifest.loop_exit_heading;
+		local end_heading_ok = end_heading == source_manifest.manifest.fan_entry_heading;
+		lane_diagnostics += "side=" + side_turns + ":" + D4_PointKey(candidate.return_lane[0]) + ">" + D4_PointKey(candidate.return_lane[candidate.return_lane.len() - 1]) + ":h=" + start_heading + ">" + end_heading + ";";
+		if (start_ok && end_ok && start_heading_ok && end_heading_ok) { returned = candidate; break; }
+	}
+	if (returned == null) {
+		local path_diagnostics = D4_PathRunDiagnostics(outbound.path);
+		return { ok = false, error = D4_Error("through_hub_paired_lane_endpoint_mismatch", lane_diagnostics + "path=" + path_diagnostics) };
+	}
+	if (!D4_AppendUniqueLaneOperations(ops, "outbound", outbound.path, null, null, emitted_rails)) return { ok = false, error = D4_Error("program_invalid_outbound", "") };
+	if (!D4_AppendUniqueLaneOperations(ops, "return", returned.return_lane, null, null, emitted_rails)) return { ok = false, error = D4_Error("program_invalid_return", "") };
+	local occupied = {};
+	foreach (p0 in outbound.path) occupied[D4_PointKey(p0)] <- true;
+	foreach (p1 in returned.return_lane) {
+		local key = D4_PointKey(p1);
+		if (key in occupied) return { ok = false, error = D4_Error("return_lane_self_crossing", key) };
+		occupied[key] <- true;
+	}
+	D4_MarkBlueprintEnvelopeOccupied(occupied, plan.station_blueprint);
+	D4_MarkBlueprintEnvelopeOccupied(occupied, plan.destination_blueprint);
+	local depot = D4_DepotOperation(returned.return_lane, occupied, true, "exit_to_next");
+	if (depot.ok) {
+		ops.append(depot.access_op);
+		ops.append(depot.op);
+	}
+	local signals_enabled = true;
+	if (signals_enabled) {
+		local signal_spacing = D4_ClampInt(D4_Has(plan.policy, "signal_spacing") ? plan.policy.signal_spacing : 8, 8, 4, 16);
+		local excluded_signals = {};
+		if (depot.ok) excluded_signals[depot.op.front] <- true;
+		D4_AppendThroughHubEndpointSignals(ops, "source", source_manifest.manifest);
+		D4_AppendThroughHubEndpointSignals(ops, "destination", dest_manifest.manifest);
+		D4_AppendLaneSignals(ops, "source.inbound", source_manifest.inbound_path, 4, excluded_signals);
+		D4_AppendLaneSignals(ops, "source.outbound", source_manifest.outbound_path, 4, excluded_signals);
+		D4_AppendLaneSignals(ops, "destination.inbound", dest_manifest.inbound_path, 4, excluded_signals);
+		D4_AppendLaneSignals(ops, "destination.outbound", dest_manifest.outbound_path, 4, excluded_signals);
+		local outbound_signals = D4_AppendLaneSignals(ops, "outbound", outbound.path, signal_spacing, excluded_signals);
+		local return_signals = D4_AppendLaneSignals(ops, "return", returned.return_lane, signal_spacing, excluded_signals);
+		if (outbound.path.len() >= signal_spacing + 3 && outbound_signals < 1) return { ok = false, error = D4_Error("program_signal_spacing_unusable", "outbound") };
+		if (returned.return_lane.len() >= signal_spacing + 3 && return_signals < 1) return { ok = false, error = D4_Error("program_signal_spacing_unusable", "return") };
+	}
+	local validation = D4_ValidateBuildProgram(ops);
+	if (!validation.ok) return validation;
+	local topology = {
+		kind = "through_hub_roro",
+		source = source_manifest.manifest,
+		destination = dest_manifest.manifest,
+		outbound = outbound.path,
+		return_lane = returned.return_lane,
+		signals = D4_ProgramSignalManifest(ops),
+	};
+	return {
+		ok = true,
+		version = DIRECTORATE_M4_BUILD_PROGRAM_VERSION,
+		fingerprint = D4_BoundedFingerprint({ topology = topology, count = ops.len(), source_out = source_out, dest_in = dest_in, dest_out = dest_out, source_in = source_in }),
+		ops = ops,
+		path = outbound.path,
+		return_lane = returned.return_lane,
+		topology = topology,
+	};
+}
+
+function D4_AppendThroughHubEndpoint(ops, prefix, blueprint, common_inbound, common_outbound, company_id, policy, emitted_rails) {
+	if (!D4_Has(blueprint, "ports") || !("platform_front" in blueprint.ports) || !("platform_rear" in blueprint.ports) || !("throat_sw" in blueprint.ports) || !("throat_ne" in blueprint.ports) || blueprint.ports.platform_front.len() != blueprint.ports.platform_rear.len() || blueprint.ports.platform_front.len() != blueprint.ports.throat_sw.len() || blueprint.ports.platform_rear.len() != blueprint.ports.throat_ne.len()) return { ok = false, error = D4_Error("through_hub_ports_missing", prefix) };
+	local layout = D4_DeriveThroughHubEndpointLayout(blueprint);
+	if (!layout.ok) return layout;
+	local platform_count = layout.platform_count;
+	if (platform_count < 2) return { ok = false, error = D4_Error("through_hub_platform_count", prefix) };
+	local entries = [];
+	local exits = [];
+	for (local i = 0; i < platform_count; i++) {
+		local front = layout.platform_front[i];
+		local rear = layout.platform_rear[i];
+		local entry = layout.throat_sw[i];
+		local exitp = layout.throat_ne[i];
+		local entry_dir = D4_DirectionBetween(entry, front);
+		local exit_dir = D4_DirectionBetween(rear, exitp);
+		if (entry_dir < 0 || exit_dir < 0) return { ok = false, error = D4_Error("through_hub_platform_heading", prefix + "." + i) };
+		local fan = layout.fan_paths[i];
+		local merge = layout.merge_paths[i];
+		if (!D4_AppendUniqueLaneOperations(ops, prefix + ".fan." + i, fan, null, front, emitted_rails)) return { ok = false, error = D4_Error("through_hub_fan_invalid", prefix + "." + i) };
+		if (!D4_AppendUniqueLaneOperations(ops, prefix + ".merge." + i, merge, rear, null, emitted_rails)) return { ok = false, error = D4_Error("through_hub_merge_invalid", prefix + "." + i) };
+		entries.append({ platform = front, entry = entry, join = layout.join[i], path = fan });
+		exits.append({ platform = rear, exit = exitp, join = layout.merge_join[i], path = merge });
+	}
+	if (!D4_AppendUniqueLaneOperations(ops, prefix + ".loop", layout.loop_path, null, null, emitted_rails)) return { ok = false, error = D4_Error("through_hub_loop_invalid", prefix) };
+	return {
+		ok = true,
+		inbound_path = layout.fan_backbone,
+		outbound_path = layout.loop_path,
+		manifest = {
+			common_inbound = common_inbound,
+			common_outbound = common_outbound,
+			common_rear_merge = layout.common_rear_merge,
+			fan_backbone = layout.fan_backbone,
+			merge_backbone = layout.merge_backbone,
+			loop_path = layout.loop_path,
+			loop_exit_heading = layout.loop_exit_heading,
+			fan_entry_heading = layout.fan_entry_heading,
+			platform_count = platform_count,
+			entries = entries,
+			exits = exits,
+		},
+	};
+}
+
+function D4_RotateBlueprintPoint(blueprint, p) {
+	local dx = p.x;
+	local dy = p.y;
+	local rx = dx;
+	local ry = dy;
+	local r = ((blueprint.rotation % 4) + 4) % 4;
+	if (r == 1) { rx = -dy; ry = dx; }
+	else if (r == 2) { rx = -dx; ry = -dy; }
+	else if (r == 3) { rx = dy; ry = -dx; }
+	return { x = blueprint.origin.x + rx, y = blueprint.origin.y + ry };
+}
+
+function D4_DeriveThroughHubEndpointLayout(blueprint) {
+	local platform_count = blueprint.ports.throat_sw.len();
+	local platform_length = abs(blueprint.ports.throat_ne[0].x - blueprint.ports.throat_sw[0].x) + abs(blueprint.ports.throat_ne[0].y - blueprint.ports.throat_sw[0].y) - 1;
+	if (platform_length < 1) return { ok = false, error = D4_Error("through_hub_length_invalid", blueprint.name) };
+	local common_inbound = D4_RotateBlueprintPoint(blueprint, { x = -platform_count - 2, y = -1 });
+	local common_outbound = D4_RotateBlueprintPoint(blueprint, { x = -platform_count - 2, y = -2 });
+	local common_rear_merge = D4_RotateBlueprintPoint(blueprint, { x = platform_length + platform_count, y = -1 });
+	local platform_front = [], platform_rear = [], throat_sw = [], throat_ne = [], join = [], merge_join = [];
+	local fan_paths = [], merge_paths = [];
+	local fan_backbone = [];
+	local merge_backbone = [];
+	for (local i = 0; i < platform_count; i++) {
+		platform_front.append(D4_RotateBlueprintPoint(blueprint, { x = 0, y = i }));
+		platform_rear.append(D4_RotateBlueprintPoint(blueprint, { x = platform_length - 1, y = i }));
+		throat_sw.append(D4_RotateBlueprintPoint(blueprint, { x = -1, y = i }));
+		throat_ne.append(D4_RotateBlueprintPoint(blueprint, { x = platform_length, y = i }));
+		join.append(D4_RotateBlueprintPoint(blueprint, { x = -platform_count - 1 + i, y = i }));
+		merge_join.append(D4_RotateBlueprintPoint(blueprint, { x = platform_length + platform_count - 1 - i, y = i }));
+	}
+	for (local b = 0; b < platform_count; b++) {
+		if (b == 0) {
+			D4_AppendPointIfNew(fan_backbone, D4_RotateBlueprintPoint(blueprint, { x = -platform_count - 2, y = -1 }));
+			D4_AppendPointIfNew(fan_backbone, D4_RotateBlueprintPoint(blueprint, { x = -platform_count - 1, y = -1 }));
+			D4_AppendPointIfNew(fan_backbone, D4_RotateBlueprintPoint(blueprint, { x = -platform_count - 1, y = 0 }));
+		} else {
+			D4_AppendPointIfNew(fan_backbone, D4_RotateBlueprintPoint(blueprint, { x = -platform_count - 1 + b, y = b - 1 }));
+			D4_AppendPointIfNew(fan_backbone, D4_RotateBlueprintPoint(blueprint, { x = -platform_count - 1 + b, y = b }));
+		}
+	}
+	for (local m = platform_count - 1; m >= 0; m--) {
+		if (m == platform_count - 1) D4_AppendPointIfNew(merge_backbone, merge_join[m]);
+		if (m > 0) {
+			D4_AppendPointIfNew(merge_backbone, D4_RotateBlueprintPoint(blueprint, { x = platform_length + platform_count - m, y = m }));
+			D4_AppendPointIfNew(merge_backbone, D4_RotateBlueprintPoint(blueprint, { x = platform_length + platform_count - m, y = m - 1 }));
+		} else {
+			D4_AppendPointIfNew(merge_backbone, D4_RotateBlueprintPoint(blueprint, { x = platform_length + platform_count, y = 0 }));
+			D4_AppendPointIfNew(merge_backbone, common_rear_merge);
+		}
+	}
+	for (local row = 0; row < platform_count; row++) {
+		local fan = [];
+		for (local fi = 0; fi < fan_backbone.len(); fi++) {
+			D4_AppendPointIfNew(fan, fan_backbone[fi]);
+			if (D4_PointKey(fan_backbone[fi]) == D4_PointKey(join[row])) break;
+		}
+		for (local x = -platform_count + row; x <= -1; x++) D4_AppendPointIfNew(fan, D4_RotateBlueprintPoint(blueprint, { x = x, y = row }));
+		fan_paths.append(fan);
+		local merge = [];
+		for (local mx = platform_length; mx <= platform_length + platform_count - 1 - row; mx++) D4_AppendPointIfNew(merge, D4_RotateBlueprintPoint(blueprint, { x = mx, y = row }));
+		local on_backbone = false;
+		for (local bi = 0; bi < merge_backbone.len(); bi++) {
+			if (D4_PointKey(merge_backbone[bi]) == D4_PointKey(merge_join[row])) on_backbone = true;
+			if (on_backbone) D4_AppendPointIfNew(merge, merge_backbone[bi]);
+		}
+		merge_paths.append(merge);
+	}
+	local loop_path = [common_rear_merge, D4_RotateBlueprintPoint(blueprint, { x = platform_length + platform_count, y = -2 })];
+	for (local lx = platform_length + platform_count - 1; lx >= -platform_count - 2; lx--) D4_AppendPointIfNew(loop_path, D4_RotateBlueprintPoint(blueprint, { x = lx, y = -2 }));
+	local loop_exit_heading = D4_DirectionBetween(loop_path[loop_path.len() - 2], common_outbound);
+	local fan_entry_heading = fan_backbone.len() > 1 ? D4_DirectionBetween(common_inbound, fan_backbone[1]) : -1;
+	if (loop_exit_heading < 0 || fan_entry_heading < 0) return { ok = false, error = D4_Error("through_hub_endpoint_heading_invalid", blueprint.name) };
+	return { ok = true, platform_count = platform_count, platform_length = platform_length, common_inbound = common_inbound, common_outbound = common_outbound, common_rear_merge = common_rear_merge, platform_front = platform_front, platform_rear = platform_rear, throat_sw = throat_sw, throat_ne = throat_ne, join = join, merge_join = merge_join, fan_backbone = fan_backbone, merge_backbone = merge_backbone, loop_path = loop_path, loop_exit_heading = loop_exit_heading, fan_entry_heading = fan_entry_heading, fan_paths = fan_paths, merge_paths = merge_paths };
+}
+
+function D4_PathRunDiagnostics(path) {
+	if (!D4_IsArray(path) || path.len() < 2) return "empty";
+	local result = D4_PointKey(path[0]) + ":";
+	local active = D4_DirectionBetween(path[0], path[1]);
+	local run = 1;
+	for (local i = 2; i < path.len(); i++) {
+		local direction = D4_DirectionBetween(path[i - 1], path[i]);
+		if (direction == active) { run++; continue; }
+		result += active + "x" + run + ",";
+		active = direction;
+		run = 1;
+	}
+	return result + active + "x" + run + ":" + D4_PointKey(path[path.len() - 1]);
+}
+
+function D4_AppendPointIfNew(path, point) {
+	if (path.len() > 0 && D4_PointKey(path[path.len() - 1]) == D4_PointKey(point)) return;
+	path.append(point);
+}
+
+function D4_RailOpKey(prev, tile, next) {
+	return prev + ":" + tile + ":" + next;
+}
+
+function D4_AppendUniqueLaneOperations(ops, prefix, path, entry_point, exit_point, emitted) {
+	if (!D4_IsArray(path) || path.len() < 2) return false;
+	for (local i = 0; i < path.len(); i++) {
+		local prev = i > 0 ? path[i - 1] : (entry_point != null ? entry_point : D4_Offset(path[i], D4_RotateDir(D4_DirectionBetween(path[i], path[i + 1]), 2), 1));
+		local next = i + 1 < path.len() ? path[i + 1] : (exit_point != null ? exit_point : D4_Offset(path[i], D4_DirectionBetween(path[i - 1], path[i]), 1));
+		if (!D4_IsPointOnMap(prev) || !D4_IsPointOnMap(next) || !D4_IsLegalPrimitive(prev, path[i], next)) return false;
+		local key = D4_RailOpKey(D4_ToTile(prev), D4_ToTile(path[i]), D4_ToTile(next));
+		if (key in emitted) continue;
+		emitted[key] <- true;
+		ops.append({ op_id = "rail." + prefix + "." + i, kind = "rail_connection", tile = D4_ToTile(path[i]), point = path[i], prev = D4_ToTile(prev), prev_point = prev, next = D4_ToTile(next), next_point = next });
+	}
+	return true;
+}
+
+function D4_AppendThroughHubEndpointSignals(ops, prefix, manifest) {
+	if (!D4_IsTable(manifest) || !D4_Has(manifest, "entries") || !D4_IsArray(manifest.entries) || !D4_Has(manifest, "exits") || !D4_IsArray(manifest.exits)) return 0;
+	local count = 0;
+	for (local i = 0; i < manifest.entries.len(); i++) {
+		local entry = manifest.entries[i];
+		if (!D4_Has(entry, "path") || !D4_IsArray(entry.path) || entry.path.len() < 1 || !D4_Has(entry, "platform")) continue;
+		local tile_point = entry.path[entry.path.len() - 1];
+		local front_point = entry.path.len() > 1 ? entry.path[entry.path.len() - 2] : D4_Offset(tile_point, D4_RotateDir(D4_DirectionBetween(tile_point, entry.platform), 2), 1);
+		ops.append({ op_id = "signal." + prefix + ".entry." + i, kind = "signal", tile = D4_ToTile(tile_point), point = tile_point, front = D4_ToTile(front_point), front_point = front_point, signal_type = GSRail.SIGNALTYPE_PBS_ONEWAY });
+		count++;
+	}
+	for (local j = 0; j < manifest.exits.len(); j++) {
+		local exitp = manifest.exits[j];
+		if (!D4_Has(exitp, "path") || !D4_IsArray(exitp.path) || exitp.path.len() < 1 || !D4_Has(exitp, "platform")) continue;
+		local tile_point2 = exitp.path[0];
+		ops.append({ op_id = "signal." + prefix + ".exit." + j, kind = "signal", tile = D4_ToTile(tile_point2), point = tile_point2, front = D4_ToTile(exitp.platform), front_point = exitp.platform, signal_type = GSRail.SIGNALTYPE_PBS_ONEWAY });
+		count++;
+	}
+	return count;
+}
+
+function D4_ProgramSignalManifest(ops) {
+	local signals = [];
+	foreach (op in ops) {
+		if (!D4_IsTable(op) || !D4_Has(op, "kind") || op.kind != "signal") continue;
+		signals.append({ op_id = op.op_id, tile = op.tile, point = op.point, front = op.front, front_point = op.front_point, signal_type = op.signal_type });
+	}
+	return signals;
+}
+
+function D4_MarkBlueprintEnvelopeOccupied(occupied, blueprint) {
+	if (occupied == null || !D4_IsTable(blueprint) || !D4_Has(blueprint, "required_clear") || !D4_IsArray(blueprint.required_clear)) return;
+	foreach (point in blueprint.required_clear) occupied[D4_PointKey(point)] <- true;
+}
+
 /* Upgrade persisted v1 programs without rerunning the bounded A* planner.
  * Ready single-shuttle plans receive the same endpoint operands emitted by a
  * fresh v2 compile; terminal plans retain their historical operations. */
@@ -132,6 +421,7 @@ function D4_UpgradeBuildProgram(plan) {
 	local source_entry = null;
 	local destination_exit = null;
 	local single_shuttle = D4_Has(plan, "station_blueprint") && D4_IsTable(plan.station_blueprint) && D4_Has(plan.station_blueprint, "name") && plan.station_blueprint.name == "single_shuttle_1xN";
+	if (!single_shuttle) return false;
 	if ((plan.state == "ready" || plan.state == "planning") && single_shuttle) {
 		local last_index = program.path.len() + 1;
 		if (program.path.len() < 2 || program.ops.len() <= last_index) return false;
@@ -168,23 +458,42 @@ function D4_SelectBestSitePair(source_candidates, destination_candidates, exclud
 			if (excluded != null && pair_key in excluded) continue;
 			local source = source_candidates[si];
 			local destination = destination_candidates[di];
-			local source_throat = D4_BlueprintPortLocation(source.blueprint, "throat_ne");
+			local through_pair = D4_IsThroughHubBlueprint(source.blueprint) && D4_IsThroughHubBlueprint(destination.blueprint);
+			local source_throat = through_pair ? D4_BlueprintPortLocation(source.blueprint, "common_outbound") : D4_BlueprintPortLocation(source.blueprint, "throat_ne");
 			if (source_throat == null) source_throat = D4_BlueprintPortLocation(source.blueprint, "throat");
-			local destination_throat = D4_BlueprintPortLocation(destination.blueprint, "throat_sw");
+			local destination_throat = through_pair ? D4_BlueprintPortLocation(destination.blueprint, "common_inbound") : D4_BlueprintPortLocation(destination.blueprint, "throat_sw");
 			if (destination_throat == null) destination_throat = D4_BlueprintPortLocation(destination.blueprint, "throat");
 			if (source_throat == null || destination_throat == null) continue;
-			local source_platform = D4_NearestBlueprintPortPoint(source.blueprint, "platform_body", source_throat);
-			local destination_platform = D4_NearestBlueprintPortPoint(destination.blueprint, "platform_body", destination_throat);
+			local source_platform = through_pair ? D4_BlueprintPortLocation(source.blueprint, "common_inbound") : D4_NearestBlueprintPortPoint(source.blueprint, "platform_body", source_throat);
+			local destination_platform = through_pair ? D4_BlueprintPortLocation(destination.blueprint, "common_outbound") : D4_NearestBlueprintPortPoint(destination.blueprint, "platform_body", destination_throat);
 			if (source_platform == null || destination_platform == null) continue;
-			local source_out = D4_DirectionBetween(source_platform, source_throat);
-			local destination_out = D4_DirectionBetween(destination_platform, destination_throat);
 			local source_to_destination = D4_DominantDirection(source_throat, destination_throat);
 			local destination_to_source = D4_DominantDirection(destination_throat, source_throat);
+			local source_out = through_pair ? source_to_destination : D4_DirectionBetween(source_platform, source_throat);
+			local destination_out = through_pair ? destination_to_source : D4_DirectionBetween(destination_platform, destination_throat);
 			if (source_out < 0 || destination_out < 0 || source_to_destination < 0 || destination_to_source < 0) continue;
+			local source_layout = null;
+			local destination_layout = null;
+			if (through_pair) {
+				source_layout = D4_DeriveThroughHubEndpointLayout(source.blueprint);
+				destination_layout = D4_DeriveThroughHubEndpointLayout(destination.blueprint);
+				if (!source_layout.ok || !destination_layout.ok) continue;
+				if (source_layout.loop_exit_heading != source_to_destination) continue;
+				if (destination_layout.loop_exit_heading != destination_to_source) continue;
+			}
 			local distance = abs(destination_throat.x - source_throat.x) + abs(destination_throat.y - source_throat.y);
 			local orientation_penalty = 0;
-			if (source_out != source_to_destination) orientation_penalty += 100000;
-			if (destination_out != destination_to_source) orientation_penalty += 100000;
+			if (through_pair) {
+				local paired_ports = false;
+				foreach (side_turns in [1, 3]) {
+					local side = D4_RotateDir(source_to_destination, side_turns);
+					if (D4_PointKey(D4_Offset(source_throat, side, 1)) == D4_PointKey(source_platform) && D4_PointKey(D4_Offset(destination_throat, side, 1)) == D4_PointKey(destination_platform)) paired_ports = true;
+				}
+				if (!paired_ports) orientation_penalty += 1000000;
+			} else {
+				if (source_out != source_to_destination) orientation_penalty += 100000;
+				if (destination_out != destination_to_source) orientation_penalty += 100000;
+			}
 			local score = orientation_penalty + distance * 100 - source.score - destination.score + si + di;
 			if (best == null || score < best_score) {
 				best = { source = source, destination = destination, score = score, source_index = si, destination_index = di };
@@ -243,7 +552,7 @@ function D4_StationRectOperation(op_id, blueprint, destination_station) {
 	return { ok = true, op = { op_id = op_id, kind = "station_rect", tile = D4_ToTile(origin), point = origin, end_tile = D4_ToTile(endp), end_point = endp, direction = direction, num_platforms = num_platforms, platform_length = platform_length, destination_station = destination_station } };
 }
 
-function D4_BuildLegalCenterline(start, goal, company_id, policy, required_start_dir = -1, required_goal_dir = -1) {
+function D4_BuildLegalCenterline(start, goal, company_id, policy, required_start_dir = -1, required_goal_dir = -1, max_turns = -1, turn_cost_override = -1) {
 	/* Bounded clean-room A* adapted from the accepted M2 planner. Every
 	 * candidate primitive is tested by OpenTTD; no client-supplied path is
 	 * accepted and no map mutation occurs. */
@@ -253,6 +562,7 @@ function D4_BuildLegalCenterline(start, goal, company_id, policy, required_start
 	local initial_dir = required_start_dir >= 0 ? required_start_dir : (abs(goal.x - start.x) >= abs(goal.y - start.y) ? (goal.x >= start.x ? DIR_NE : DIR_SW) : (goal.y >= start.y ? DIR_SE : DIR_NW));
 	local initial_h = (abs(goal.x - start.x) + abs(goal.y - start.y)) * 10;
 	local seed = { point = start, dir = initial_dir, g = 0, cost = initial_h, index = 0, parent_index = -1, steps = 0, turns = 0 };
+	local route_turn_cost = turn_cost_override >= 0 ? D4_ClampInt(turn_cost_override, 5, 0, 100) : D4_ClampInt(D4_Has(policy, "route_turn_cost") ? policy.route_turn_cost : 5, 5, 0, 100);
 	local frontier = [seed];
 	local nodes = [seed];
 	local visited = {};
@@ -273,6 +583,7 @@ function D4_BuildLegalCenterline(start, goal, company_id, policy, required_start
 		foreach (dir in dirs) {
 			if (node.steps == 0 && required_start_dir >= 0 && dir != required_start_dir) continue;
 			if (dir == D4_RotateDir(node.dir, 2)) continue;
+			if (max_turns >= 0 && dir != node.dir && node.turns >= max_turns) continue;
 			local next = D4_Offset(node.point, dir, 1);
 			if (!D4_IsPointOnMap(next) || !GSMap.IsValidTile(D4_ToTile(next))) { rejected_bounds++; continue; }
 			local nkey = D4_PointKey(next) + ":" + dir;
@@ -286,7 +597,7 @@ function D4_BuildLegalCenterline(start, goal, company_id, policy, required_start
 				if (!D4_IsPointOnMap(continuation) || !D4_TestProgramRailPiece(node.point, next, continuation, company_id)) { rejected_endpoint++; continue; }
 			}
 			if (nodes.len() >= frontier_limit) continue;
-			local turn_cost = dir == node.dir ? 0 : 5;
+			local turn_cost = dir == node.dir ? 0 : route_turn_cost;
 			local heuristic = (abs(goal.x - next.x) + abs(goal.y - next.y)) * 10;
 			/* Keep the accumulated path cost separate from the heuristic. Adding the
 			 * heuristic to node.cost on every generation compounds it once per hop,
@@ -400,13 +711,16 @@ function D4_AppendLaneOperations(ops, prefix, path, entry_point, exit_point) {
 	return true;
 }
 
-function D4_DepotOperation(path, occupied = null) {
+function D4_DepotOperation(path, occupied = null, prefer_tail = false, access_mode = "join_from_prev") {
 	if (!D4_IsArray(path) || path.len() < 8) return { ok = false };
 	/* Put the siding on a proven straight run with clearance on both sides of
 	 * the junction. The old fixed path[2] placement could sit immediately after
 	 * a centerline turn; trains then oscillated between depot and mouth despite
 	 * successful static rail readback. */
-	for (local i = 4; i + 2 < path.len(); i++) {
+	local first = prefer_tail ? path.len() - 3 : 4;
+	local last = prefer_tail ? 4 : path.len() - 3;
+	local step = prefer_tail ? -1 : 1;
+	for (local i = first; (prefer_tail ? i >= last : i <= last); i += step) {
 		local prev2 = path[i - 2];
 		local a = path[i - 1];
 		local front = path[i];
@@ -418,8 +732,14 @@ function D4_DepotOperation(path, occupied = null) {
 			local depot_point = D4_Offset(front, side, 1);
 			if (!D4_IsPointOnMap(depot_point)) continue;
 			if (occupied != null && D4_PointKey(depot_point) in occupied) continue;
-			if (!D4_IsLegalPrimitive(a, front, depot_point)) continue;
-			local access_op = { op_id = "rail.depot_access.0", kind = "rail_connection", tile = D4_ToTile(front), point = front, prev = D4_ToTile(a), prev_point = a, next = D4_ToTile(depot_point), next_point = depot_point };
+			local access_prev = a;
+			local access_next = depot_point;
+			if (access_mode == "exit_to_next") {
+				access_prev = depot_point;
+				access_next = next;
+			}
+			if (!D4_IsLegalPrimitive(access_prev, front, access_next)) continue;
+			local access_op = { op_id = "rail.depot_access.0", kind = "rail_connection", tile = D4_ToTile(front), point = front, prev = D4_ToTile(access_prev), prev_point = access_prev, next = D4_ToTile(access_next), next_point = access_next };
 			return { ok = true, access_op = access_op, op = { op_id = "depot.0", kind = "depot", tile = D4_ToTile(depot_point), point = depot_point, front = D4_ToTile(front), front_point = front } };
 		}
 	}
@@ -548,6 +868,21 @@ function D4_VerifyProgramTopology(program, company_id) {
 		} else if (op.kind == "depot" && (!GSRail.IsRailDepotTile(op.tile) || GSRail.GetRailDepotFrontTile(op.tile) != op.front)) failures.append({ op_id = op.op_id, reason = "depot_mismatch", tile = op.tile, front = op.front });
 		else if (op.kind == "signal" && GSRail.GetSignalType(op.tile, op.front) != op.signal_type) failures.append({ op_id = op.op_id, reason = "signal_mismatch", tile = op.tile, front = op.front });
 	}
+	if (D4_Has(program, "topology") && D4_IsTable(program.topology) && D4_Has(program.topology, "kind") && program.topology.kind == "through_hub_roro") {
+		local source = D4_VerifyThroughHubEndpointTopology(program.topology.source, "source");
+		if (!source.ok) {
+			foreach (f in source.failures) failures.append(f);
+		}
+		local destination = D4_VerifyThroughHubEndpointTopology(program.topology.destination, "destination");
+		if (!destination.ok) {
+			foreach (f2 in destination.failures) failures.append(f2);
+		}
+		local trunks = D4_VerifyThroughHubTrunks(program.topology);
+		if (!trunks.ok) {
+			foreach (f3 in trunks.failures) failures.append(f3);
+		}
+		return { ok = failures.len() == 0, failures = failures, source = source, destination = destination, trunks = trunks };
+	}
 
 	/* A route is not topologically complete merely because its stations and
 	 * internal rail primitives exist. Prove each station endpoint participates
@@ -572,4 +907,158 @@ function D4_VerifyProgramTopology(program, company_id) {
 		if (!connected) failures.append({ op_id = station.op_id, reason = "station_not_connected", tile = station.tile });
 	}
 	return { ok = failures.len() == 0, failures = failures, station_connections = station_connections };
+}
+
+function D4_IsSafeThroughHubTopology(topology) {
+	if (!D4_IsTable(topology) || !D4_Has(topology, "kind") || topology.kind != "through_hub_roro") return false;
+	if (!D4_Has(topology, "source") || !D4_Has(topology, "destination") || !D4_Has(topology, "outbound") || !D4_Has(topology, "return_lane") || !D4_Has(topology, "signals")) return false;
+	if (!D4_IsSafeThroughHubEndpoint(topology.source) || !D4_IsSafeThroughHubEndpoint(topology.destination)) return false;
+	return D4_IsSafePointPath(topology.outbound, 2, DIRECTORATE_M4_MAX_OPERATION_ENTRIES) && D4_IsSafePointPath(topology.return_lane, 2, DIRECTORATE_M4_MAX_OPERATION_ENTRIES) && D4_IsSafeSignalManifest(topology.signals);
+}
+
+function D4_IsSafeThroughHubEndpoint(endpoint) {
+	if (!D4_IsTable(endpoint) || !D4_Has(endpoint, "common_inbound") || !D4_Has(endpoint, "common_outbound") || !D4_Has(endpoint, "common_rear_merge") || !D4_IsPointOnMap(endpoint.common_inbound) || !D4_IsPointOnMap(endpoint.common_outbound) || !D4_IsPointOnMap(endpoint.common_rear_merge)) return false;
+	if (!D4_Has(endpoint, "fan_backbone") || !D4_IsSafePointPath(endpoint.fan_backbone, 2, DIRECTORATE_M4_MAX_OPERATION_ENTRIES)) return false;
+	if (!D4_Has(endpoint, "merge_backbone") || !D4_IsSafePointPath(endpoint.merge_backbone, 2, DIRECTORATE_M4_MAX_OPERATION_ENTRIES)) return false;
+	if (!D4_Has(endpoint, "loop_path") || !D4_IsSafePointPath(endpoint.loop_path, 2, DIRECTORATE_M4_MAX_OPERATION_ENTRIES)) return false;
+	if (!D4_Has(endpoint, "loop_exit_heading") || typeof endpoint.loop_exit_heading != "integer" || !D4_Has(endpoint, "fan_entry_heading") || typeof endpoint.fan_entry_heading != "integer") return false;
+	if (D4_DirectionBetween(endpoint.loop_path[endpoint.loop_path.len() - 2], endpoint.common_outbound) != endpoint.loop_exit_heading) return false;
+	if (D4_DirectionBetween(endpoint.common_inbound, endpoint.fan_backbone[1]) != endpoint.fan_entry_heading) return false;
+	if (!D4_Has(endpoint, "platform_count") || typeof endpoint.platform_count != "integer" || endpoint.platform_count < 2 || endpoint.platform_count > 16) return false;
+	if (!D4_Has(endpoint, "entries") || !D4_Has(endpoint, "exits") || !D4_IsArray(endpoint.entries) || !D4_IsArray(endpoint.exits) || endpoint.entries.len() != endpoint.platform_count || endpoint.entries.len() != endpoint.exits.len()) return false;
+	local entry_rows = {};
+	local exit_rows = {};
+	foreach (entry in endpoint.entries) {
+		if (!D4_IsTable(entry) || !D4_Has(entry, "platform") || !D4_IsPointOnMap(entry.platform) || !D4_Has(entry, "entry") || !D4_IsPointOnMap(entry.entry) || !D4_Has(entry, "path") || !D4_IsSafePointPath(entry.path, 1, DIRECTORATE_M4_MAX_OPERATION_ENTRIES)) return false;
+		if (!D4_IsAdjacent(entry.entry, entry.platform)) return false;
+		if (D4_PointKey(entry.path[0]) != D4_PointKey(endpoint.common_inbound)) return false;
+		if (D4_PointKey(entry.path[entry.path.len() - 1]) != D4_PointKey(entry.entry)) return false;
+		local ekey = D4_PointKey(entry.platform);
+		if (ekey in entry_rows) return false;
+		entry_rows[ekey] <- true;
+	}
+	foreach (exitp in endpoint.exits) {
+		if (!D4_IsTable(exitp) || !D4_Has(exitp, "platform") || !D4_IsPointOnMap(exitp.platform) || !D4_Has(exitp, "exit") || !D4_IsPointOnMap(exitp.exit) || !D4_Has(exitp, "path") || !D4_IsSafePointPath(exitp.path, 1, DIRECTORATE_M4_MAX_OPERATION_ENTRIES)) return false;
+		if (!D4_IsAdjacent(exitp.exit, exitp.platform)) return false;
+		if (D4_PointKey(exitp.path[0]) != D4_PointKey(exitp.exit)) return false;
+		if (D4_PointKey(exitp.path[exitp.path.len() - 1]) != D4_PointKey(endpoint.common_rear_merge)) return false;
+		local xkey = D4_PointKey(exitp.platform);
+		if (xkey in exit_rows) return false;
+		exit_rows[xkey] <- true;
+	}
+	return true;
+}
+
+function D4_IsSafeSignalManifest(signals) {
+	if (!D4_IsArray(signals) || signals.len() < 1 || signals.len() > DIRECTORATE_M4_MAX_OPERATION_ENTRIES) return false;
+	local seen = {};
+	local map_area = GSMap.GetMapSizeX() * GSMap.GetMapSizeY();
+	foreach (signal in signals) {
+		if (!D4_IsTable(signal) || !D4_Has(signal, "op_id") || typeof signal.op_id != "string" || signal.op_id.len() < 1 || signal.op_id.len() > 128) return false;
+		if (!D4_Has(signal, "tile") || typeof signal.tile != "integer" || signal.tile < 0 || signal.tile >= map_area) return false;
+		if (!D4_Has(signal, "front") || typeof signal.front != "integer" || signal.front < 0 || signal.front >= map_area || signal.front == signal.tile) return false;
+		if (!D4_Has(signal, "signal_type") || typeof signal.signal_type != "integer") return false;
+		local key = signal.tile + ":" + signal.front;
+		if (key in seen) return false;
+		seen[key] <- true;
+	}
+	return true;
+}
+
+function D4_IsSafePointPath(path, min_len, max_len) {
+	if (!D4_IsArray(path) || path.len() < min_len || path.len() > max_len) return false;
+	foreach (p in path) {
+		if (!D4_IsPointOnMap(p)) return false;
+	}
+	return true;
+}
+
+function D4_VerifyThroughHubEndpointTopology(endpoint, prefix) {
+	local failures = [];
+	if (!D4_IsTable(endpoint) || !D4_Has(endpoint, "common_inbound") || !D4_Has(endpoint, "common_outbound") || !D4_Has(endpoint, "entries") || !D4_Has(endpoint, "exits") || !D4_IsArray(endpoint.entries) || !D4_IsArray(endpoint.exits) || endpoint.entries.len() < 2 || endpoint.entries.len() != endpoint.exits.len()) return { ok = false, failures = [{ op_id = prefix, reason = "through_hub_manifest_invalid" }] };
+	if (!D4_Has(endpoint, "common_rear_merge") || !D4_Has(endpoint, "loop_path") || !D4_IsArray(endpoint.loop_path) || endpoint.loop_path.len() < 2) failures.append({ op_id = prefix, reason = "local_loop_missing" });
+	local platform_count = D4_Has(endpoint, "platform_count") && typeof endpoint.platform_count == "integer" ? endpoint.platform_count : endpoint.entries.len();
+	if (endpoint.entries.len() != platform_count || endpoint.exits.len() != platform_count) failures.append({ op_id = prefix, reason = "platform_rows_not_covered" });
+	local entry_rows = {};
+	local exit_rows = {};
+	foreach (entry in endpoint.entries) {
+		if (!D4_Has(entry, "path") || !D4_IsArray(entry.path) || entry.path.len() < 1) { failures.append({ op_id = prefix, reason = "entry_path_missing" }); continue; }
+		if (!D4_VerifyProgramPathConnections(entry.path, null, entry.platform)) failures.append({ op_id = prefix, reason = "entry_unreachable", point = D4_Has(entry, "platform") ? entry.platform : null });
+		if (D4_PointKey(entry.path[0]) != D4_PointKey(endpoint.common_inbound)) failures.append({ op_id = prefix, reason = "entry_not_common_inbound" });
+		if (!D4_Has(entry, "entry") || D4_PointKey(entry.path[entry.path.len() - 1]) != D4_PointKey(entry.entry)) failures.append({ op_id = prefix, reason = "entry_not_axis_throat" });
+		if (!D4_Has(entry, "entry") || !D4_Has(entry, "platform") || !D4_IsAdjacent(entry.entry, entry.platform)) failures.append({ op_id = prefix, reason = "entry_not_adjacent_platform" });
+		if (D4_Has(entry, "platform")) {
+			local ekey = D4_PointKey(entry.platform);
+			if (ekey in entry_rows) failures.append({ op_id = prefix, reason = "entry_platform_duplicate", point = entry.platform });
+			entry_rows[ekey] <- true;
+		}
+	}
+	foreach (exitp in endpoint.exits) {
+		if (!D4_Has(exitp, "path") || !D4_IsArray(exitp.path) || exitp.path.len() < 1) { failures.append({ op_id = prefix, reason = "exit_path_missing" }); continue; }
+		if (!D4_VerifyProgramPathConnections(exitp.path, exitp.platform, null)) failures.append({ op_id = prefix, reason = "exit_unreachable", point = D4_Has(exitp, "platform") ? exitp.platform : null });
+		if (!D4_Has(exitp, "exit") || D4_PointKey(exitp.path[0]) != D4_PointKey(exitp.exit)) failures.append({ op_id = prefix, reason = "exit_not_axis_throat" });
+		if (D4_Has(endpoint, "common_rear_merge") && D4_PointKey(exitp.path[exitp.path.len() - 1]) != D4_PointKey(endpoint.common_rear_merge)) failures.append({ op_id = prefix, reason = "exit_not_common_rear_merge" });
+		if (!D4_Has(exitp, "exit") || !D4_Has(exitp, "platform") || !D4_IsAdjacent(exitp.exit, exitp.platform)) failures.append({ op_id = prefix, reason = "exit_not_adjacent_platform" });
+		if (D4_Has(exitp, "platform")) {
+			local xkey = D4_PointKey(exitp.platform);
+			if (xkey in exit_rows) failures.append({ op_id = prefix, reason = "exit_platform_duplicate", point = exitp.platform });
+			exit_rows[xkey] <- true;
+		}
+	}
+	if (D4_Has(endpoint, "loop_path") && D4_IsArray(endpoint.loop_path) && endpoint.loop_path.len() >= 2) {
+		if (!D4_VerifyProgramPathConnections(endpoint.loop_path, null, null)) failures.append({ op_id = prefix, reason = "local_loop_disconnected" });
+		if (D4_Has(endpoint, "common_rear_merge") && D4_PointKey(endpoint.loop_path[0]) != D4_PointKey(endpoint.common_rear_merge)) failures.append({ op_id = prefix, reason = "loop_not_common_rear_merge" });
+		if (D4_PointKey(endpoint.loop_path[endpoint.loop_path.len() - 1]) != D4_PointKey(endpoint.common_outbound)) failures.append({ op_id = prefix, reason = "loop_not_common_outbound" });
+		if (!D4_Has(endpoint, "loop_exit_heading") || D4_DirectionBetween(endpoint.loop_path[endpoint.loop_path.len() - 2], endpoint.common_outbound) != endpoint.loop_exit_heading) failures.append({ op_id = prefix, reason = "loop_exit_heading_mismatch" });
+		if (!D4_Has(endpoint, "fan_entry_heading") || !D4_Has(endpoint, "fan_backbone") || !D4_IsArray(endpoint.fan_backbone) || endpoint.fan_backbone.len() < 2 || D4_DirectionBetween(endpoint.common_inbound, endpoint.fan_backbone[1]) != endpoint.fan_entry_heading) failures.append({ op_id = prefix, reason = "fan_entry_heading_mismatch" });
+	}
+	return { ok = failures.len() == 0, failures = failures, platform_count = endpoint.entries.len() };
+}
+
+function D4_VerifyThroughHubTrunks(topology) {
+	local failures = [];
+	if (!D4_Has(topology, "outbound") || !D4_IsArray(topology.outbound) || topology.outbound.len() < 2 || !D4_Has(topology, "return_lane") || !D4_IsArray(topology.return_lane) || topology.return_lane.len() < 2) return { ok = false, failures = [{ reason = "trunk_paths_missing" }] };
+	if (D4_PointKey(topology.outbound[0]) != D4_PointKey(topology.source.common_outbound)) failures.append({ reason = "outbound_not_source_common_exit" });
+	if (D4_PointKey(topology.outbound[topology.outbound.len() - 1]) != D4_PointKey(topology.destination.common_inbound)) failures.append({ reason = "outbound_not_destination_common_entry" });
+	if (D4_PointKey(topology.return_lane[0]) != D4_PointKey(topology.destination.common_outbound)) failures.append({ reason = "return_not_destination_common_exit" });
+	if (D4_PointKey(topology.return_lane[topology.return_lane.len() - 1]) != D4_PointKey(topology.source.common_inbound)) failures.append({ reason = "return_not_source_common_entry" });
+	if (D4_DirectionBetween(topology.outbound[0], topology.outbound[1]) != topology.source.loop_exit_heading) failures.append({ reason = "outbound_source_heading_mismatch" });
+	if (D4_DirectionBetween(topology.outbound[topology.outbound.len() - 2], topology.outbound[topology.outbound.len() - 1]) != topology.destination.fan_entry_heading) failures.append({ reason = "outbound_destination_heading_mismatch" });
+	if (D4_DirectionBetween(topology.return_lane[0], topology.return_lane[1]) != topology.destination.loop_exit_heading) failures.append({ reason = "return_destination_heading_mismatch" });
+	if (D4_DirectionBetween(topology.return_lane[topology.return_lane.len() - 2], topology.return_lane[topology.return_lane.len() - 1]) != topology.source.fan_entry_heading) failures.append({ reason = "return_source_heading_mismatch" });
+	local seen = {};
+	foreach (p0 in topology.outbound) seen[D4_PointKey(p0)] <- true;
+	foreach (p1 in topology.return_lane) {
+		if (D4_PointKey(p1) in seen) failures.append({ reason = "return_lane_self_crossing", point = p1 });
+	}
+	if (!D4_VerifyProgramPathConnections(topology.outbound, null, null)) failures.append({ reason = "outbound_trunk_disconnected" });
+	if (!D4_VerifyProgramPathConnections(topology.return_lane, null, null)) failures.append({ reason = "return_trunk_disconnected" });
+	local signals = D4_VerifyThroughHubSignals(topology);
+	if (!signals.ok) {
+		foreach (failure in signals.failures) failures.append(failure);
+	}
+	return { ok = failures.len() == 0, failures = failures };
+}
+
+function D4_VerifyThroughHubSignals(topology) {
+	local failures = [];
+	if (!D4_Has(topology, "signals") || !D4_IsArray(topology.signals) || topology.signals.len() < 1) return { ok = false, failures = [{ reason = "signal_manifest_missing" }] };
+	foreach (signal in topology.signals) {
+		if (!D4_IsTable(signal) || !D4_Has(signal, "tile") || !D4_Has(signal, "front") || !D4_Has(signal, "signal_type")) {
+			failures.append({ reason = "signal_manifest_invalid" });
+			continue;
+		}
+		if (GSRail.GetSignalType(signal.tile, signal.front) != signal.signal_type) failures.append({ reason = "signal_missing_or_wrong_facing", tile = signal.tile, front = signal.front });
+	}
+	return { ok = failures.len() == 0, failures = failures };
+}
+
+function D4_VerifyProgramPathConnections(path, entry_point, exit_point) {
+	for (local i = 0; i < path.len(); i++) {
+		local prev = i > 0 ? path[i - 1] : entry_point;
+		local next = i + 1 < path.len() ? path[i + 1] : exit_point;
+		if (prev == null || next == null) continue;
+		if (!GSRail.AreTilesConnected(D4_ToTile(prev), D4_ToTile(path[i]), D4_ToTile(next))) return false;
+	}
+	return true;
 }
