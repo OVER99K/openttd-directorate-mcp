@@ -142,8 +142,8 @@ test("Single-shuttle routing uses the real station tiles as endpoint context", (
   const program = readFileSync(join(gameDir, "build_program.nut"), "utf8");
   const store = readFileSync(join(gameDir, "plan_store.nut"), "utf8");
   const version = readFileSync(join(gameDir, "version.nut"), "utf8");
-  assert.match(program, /local source_entry = single_shuttle \? source_station\.op\.point : null/);
-  assert.match(program, /local destination_exit = single_shuttle \? destination_station\.op\.point : null/);
+  assert.match(program, /local source_entry = single_shuttle \? source_station\.op\.point : D4_NearestBlueprintPortPoint/);
+  assert.match(program, /local destination_exit = single_shuttle \? destination_station\.op\.point : D4_NearestBlueprintPortPoint/);
   assert.match(program, /D4_AppendLaneOperations\(ops, "outbound", route\.path, source_entry, destination_exit\)/);
   assert.match(program, /local prev = i > 0 \? path\[i - 1\] : \(entry_point != null \? entry_point/);
   assert.match(program, /local next = i \+ 1 < path\.len\(\) \? path\[i \+ 1\] : \(exit_point != null \? exit_point/);
@@ -181,6 +181,13 @@ test("Initial paired corridor remains signal-free for single-train commissioning
   const program = readFileSync(join(gameDir, "build_program.nut"), "utf8");
   assert.doesNotMatch(program, /op_id = "signal\.(?:outbound|return)\.0"/);
   assert.match(program, /signals belong to later capacity expansion/);
+});
+
+test("Paired corridor connects its outbound lane to both station platforms", () => {
+  const program = readFileSync(join(gameDir, "build_program.nut"), "utf8");
+  assert.match(program, /D4_NearestBlueprintPortPoint\(plan\.station_blueprint, "platform_body", start\)/);
+  assert.match(program, /D4_NearestBlueprintPortPoint\(plan\.destination_blueprint, "platform_body", goal\)/);
+  assert.match(program, /D4_AppendLaneOperations\(ops, "outbound", route\.path, source_entry, destination_exit\)/);
 });
 
 test("Station survey uses authoritative producer and acceptor catchment tiles", () => {

@@ -19,8 +19,9 @@ function D4_CompileBuildProgram(plan) {
 	 * shuttle, preserve the actual station tiles as the predecessor/successor
 	 * context in the emitted endpoint primitives.  Apply preflight tests those
 	 * exact primitives before any mutation. */
-	local source_entry = single_shuttle ? source_station.op.point : null;
-	local destination_exit = single_shuttle ? destination_station.op.point : null;
+	local source_entry = single_shuttle ? source_station.op.point : D4_NearestBlueprintPortPoint(plan.station_blueprint, "platform_body", start);
+	local destination_exit = single_shuttle ? destination_station.op.point : D4_NearestBlueprintPortPoint(plan.destination_blueprint, "platform_body", goal);
+	if (source_entry == null || destination_exit == null) return { ok = false, error = D4_Error("program_missing_station_entries", "") };
 	local route = D4_BuildLegalCenterline(start, goal, plan.company_id, plan.policy);
 	if (!route.ok) return route;
 	local paired = { ok = true, return_lane = [] };
