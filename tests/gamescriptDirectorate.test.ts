@@ -263,6 +263,13 @@ test("Commissioning scales cargo consists within the actual station length", () 
   assert.match(bridge, /payload\.command == "list_industries"/);
 });
 
+test("Plan retention prunes failed planning envelopes before they exhaust Load", () => {
+  const store = readFileSync(join(gameDir, "plan_store.nut"), "utf8");
+  assert.match(store, /plan\.revision == 0 && plan\.phase == "planning"/);
+  assert.match(store, /delete this\.plans\[id\]/);
+  assert.match(store, /exhaust OpenTTD's Load budget/);
+});
+
 test("Station survey uses authoritative producer and acceptor catchment tiles", () => {
   const survey = readFileSync(join(gameDir, "site_survey.nut"), "utf8");
   const store = readFileSync(join(gameDir, "plan_store.nut"), "utf8");

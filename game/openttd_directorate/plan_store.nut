@@ -387,7 +387,15 @@ class DirectorateM4PlanStore {
 		for (local i = this.order.len() - 1; i >= 0; i--) {
 			local id = this.order[i];
 			if (!(id in this.plans)) continue;
-			local state = this.plans[id].state;
+			local plan = this.plans[id];
+			/* Failed or timed-out planning requests never crossed a revision fence
+			 * and contain no reusable build program. Drop them before Save/Load can
+			 * accumulate enough dead envelopes to exhaust OpenTTD's Load budget. */
+			if (plan.revision == 0 && plan.phase == "planning" && (!D4_Has(plan, "build_program") || !D4_IsTable(plan.build_program) || !D4_Has(plan.build_program, "ok") || !plan.build_program.ok)) {
+				delete this.plans[id];
+				continue;
+			}
+			local state = plan.state;
 			if (state == "applied" || state == "cancelled" || state == "failed") {
 				terminal_seen++;
 				if (terminal_seen > retention) delete this.plans[id];
