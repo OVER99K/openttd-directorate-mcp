@@ -224,6 +224,8 @@ test("Paired corridor connects its outbound lane to both station platforms", () 
   assert.match(program, /D4_NearestBlueprintPortPoint\(plan\.destination_blueprint, "platform_body", goal\)/);
   assert.match(program, /D4_AppendLaneOperations\(ops, "outbound", route\.path, source_entry, destination_exit\)/);
   assert.match(program, /D4_AppendLaneOperations\(ops, "return", paired\.return_lane, destination_return_entry, source_return_exit\)/);
+  assert.match(program, /function D4_SelectLanePlatformEndpoint\(blueprint, lane_tile, lane_neighbor, is_entry\)/);
+  assert.match(program, /D4_IsAdjacent\(point, lane_tile\)/);
   assert.match(program, /function D4_PointInStationRect\(point, station\)/);
   assert.match(program, /D4_PointInStationRect\(rail\.prev_point, station\)/);
   assert.match(program, /D4_PointInStationRect\(rail\.next_point, station\)/);

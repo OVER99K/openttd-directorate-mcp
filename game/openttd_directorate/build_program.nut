@@ -33,8 +33,9 @@ function D4_CompileBuildProgram(plan) {
 	if (!single_shuttle) {
 		/* D4_DeriveProgramLanes returns the second track in destination-to-source
 		 * order, so its station endpoints are deliberately reversed. */
-		local destination_return_entry = D4_NearestBlueprintPortPoint(plan.destination_blueprint, "platform_body", paired.return_lane[0]);
-		local source_return_exit = D4_NearestBlueprintPortPoint(plan.station_blueprint, "platform_body", paired.return_lane[paired.return_lane.len() - 1]);
+		local destination_return_entry = D4_SelectLanePlatformEndpoint(plan.destination_blueprint, paired.return_lane[0], paired.return_lane[1], true);
+		local source_return_exit = D4_SelectLanePlatformEndpoint(plan.station_blueprint, paired.return_lane[paired.return_lane.len() - 1], paired.return_lane[paired.return_lane.len() - 2], false);
+		if (destination_return_entry == null || source_return_exit == null) return { ok = false, error = D4_Error("program_return_station_endpoint_missing", "") };
 		if (!D4_AppendLaneOperations(ops, "return", paired.return_lane, destination_return_entry, source_return_exit)) return { ok = false, error = D4_Error("program_invalid_return", "") };
 	}
 
@@ -150,6 +151,16 @@ function D4_NearestBlueprintPortPoint(blueprint, port_name, target) {
 		if (distance < best_distance) { best = points[i]; best_distance = distance; }
 	}
 	return best;
+}
+
+function D4_SelectLanePlatformEndpoint(blueprint, lane_tile, lane_neighbor, is_entry) {
+	if (!D4_IsTable(blueprint) || !D4_Has(blueprint, "ports") || !("platform_body" in blueprint.ports)) return null;
+	foreach (point in blueprint.ports.platform_body) {
+		if (!D4_IsAdjacent(point, lane_tile)) continue;
+		local legal = is_entry ? D4_IsLegalPrimitive(point, lane_tile, lane_neighbor) : D4_IsLegalPrimitive(lane_neighbor, lane_tile, point);
+		if (legal) return point;
+	}
+	return null;
 }
 
 function D4_DominantDirection(from, to) {
