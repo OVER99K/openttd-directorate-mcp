@@ -90,11 +90,11 @@ class DirectorateM4Bridge {
 		if (D4_Has(payload, "operation_id") && typeof payload.operation_id == "string") options.operation_id <- payload.operation_id;
 		if (D4_Has(payload, "target_operation_id") && typeof payload.target_operation_id == "string") options.target_operation_id <- payload.target_operation_id;
 		local result = this.store.Apply(payload.company_id, payload.plan_id, payload.revision, payload.phase, options);
-		if (!result.ok) return result;
 		/* The bridge envelope owns the `payload` field. Apply internals return a
-		 * rich operation result directly; wrap it rather than silently replacing
-		 * created/reused/rollback evidence with an empty payload in Dispatch. */
-		return { ok = true, payload = result };
+		 * rich operation result directly on both success and failure; always wrap
+		 * it so failed_op, readback, verification, and rollback evidence survive
+		 * Dispatch instead of being replaced by an empty payload. */
+		return { ok = result.ok, payload = result, error = D4_Has(result, "error") ? result.error : null };
 	}
 
 	function HandleVerify(payload) {

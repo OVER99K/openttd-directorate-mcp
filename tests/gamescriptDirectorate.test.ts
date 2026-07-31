@@ -118,6 +118,12 @@ test("Bridge dispatches verify and executes commission_route", () => {
   assert.match(bridge, /this\.store\.Verify\(payload\.company_id, payload\.operation_id, level, true\)/);
 });
 
+test("Bridge preserves rich apply evidence on success and failure", () => {
+  const bridge = readFileSync(join(gameDir, "bridge.nut"), "utf8");
+  assert.match(bridge, /return \{ ok = result\.ok, payload = result, error = D4_Has\(result, "error"\) \? result\.error : null \};/);
+  assert.doesNotMatch(bridge, /if \(!result\.ok\) return result;/);
+});
+
 test("Source uses bounded loops and explicit safety constants", () => {
   const source = readdirSync(gameDir)
     .filter((file) => file.endsWith(".nut"))
