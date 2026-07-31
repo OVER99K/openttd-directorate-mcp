@@ -31,7 +31,10 @@ class DirectorateM4PlanStore {
 			local id = data.order[i];
 			if (typeof id != "string" || id.len() < 1 || id.len() > 128 || id in loaded || !(id in data.plans)) continue;
 			local plan = data.plans[id];
-			if (!this.IsPlanSafe(plan, true) || plan.plan_id != id) { GSLog.Warning("D4 M4 plan-store load rejected plan " + id); continue; }
+			/* Keep Load() bounded: validate the persisted envelope and program shape
+			 * here, then perform operation-by-operation program validation only when
+			 * that specific plan is accessed. */
+			if (!this.IsPlanSafe(plan, true, false) || plan.plan_id != id) { GSLog.Warning("D4 M4 plan-store load rejected plan " + id); continue; }
 			if (D4_UpgradeBuildProgram(plan)) {
 				plan.revision++;
 				plan.updated_tick = D4_Tick();
@@ -49,7 +52,11 @@ class DirectorateM4PlanStore {
 	}
 
 	function GetPlan(plan_id) {
-		if (plan_id in this.plans) return this.plans[plan_id];
+		if (plan_id in this.plans) {
+			local plan = this.plans[plan_id];
+			if (!this.IsPlanSafe(plan, false, true)) return null;
+			return plan;
+		}
 		return null;
 	}
 
@@ -69,6 +76,7 @@ class DirectorateM4PlanStore {
 		local plan = null;
 		if (requested_id != null && requested_id in this.plans) {
 			plan = this.plans[requested_id];
+			if (!this.IsPlanSafe(plan, false, true)) return { ok = false, error = D4_Error("unsafe_plan", requested_id) };
 			local fence = this.RequireFence(plan, company_id, revision);
 			if (!fence.ok) return fence;
 			local requested_fingerprint = D4_StableFingerprint(company_id, intent, policy);
@@ -329,7 +337,7 @@ class DirectorateM4PlanStore {
 		};
 	}
 
-	function IsPlanSafe(plan, allow_legacy = false) {
+	function IsPlanSafe(plan, allow_legacy = false, validate_program = true) {
 		if (!D4_IsTable(plan)) return false;
 		if (!("plan_id" in plan) || typeof plan.plan_id != "string" || plan.plan_id.len() < 1 || plan.plan_id.len() > 128) return false;
 		if (!D4_IsValidPlanId(plan.plan_id)) return false;
@@ -353,8 +361,10 @@ class DirectorateM4PlanStore {
 				if (!D4_IsArray(plan.build_program.return_lane) || plan.build_program.return_lane.len() > DIRECTORATE_M4_MAX_OPERATION_ENTRIES) return false;
 
 			}
-			local validation = D4_ValidateBuildProgram(plan.build_program.ops);
-			if (!validation.ok) return false;
+			if (validate_program) {
+				local validation = D4_ValidateBuildProgram(plan.build_program.ops);
+				if (!validation.ok) return false;
+			}
 		}
 		return true;
 	}

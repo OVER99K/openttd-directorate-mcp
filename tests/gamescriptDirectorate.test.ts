@@ -96,6 +96,15 @@ test("Journal load defers every recoverable partial mutation without dropping ro
   assert.ok(main.indexOf("this.store.Tick();", main.indexOf("while (true)")) < main.indexOf("this.bridge.Poll();", main.indexOf("while (true)")));
 });
 
+test("Plan load defers deep build-program validation until the plan is accessed", () => {
+  const store = readFileSync(join(gameDir, "plan_store.nut"), "utf8");
+  assert.match(store, /this\.IsPlanSafe\(plan, true, false\)/);
+  assert.match(store, /function IsPlanSafe\(plan, allow_legacy = false, validate_program = true\)/);
+  assert.match(store, /if \(validate_program\) \{\s*local validation = D4_ValidateBuildProgram/s);
+  assert.match(store, /if \(!this\.IsPlanSafe\(plan, false, true\)\) return null/);
+  assert.match(store, /D4_Error\("unsafe_plan", requested_id\)/);
+});
+
 test("Plan store owns the route registry and exposes observe/verify routes", () => {
   const store = readFileSync(join(gameDir, "plan_store.nut"), "utf8");
   assert.match(store, /registry = DirectorateM4RouteRegistry\(\)/);
