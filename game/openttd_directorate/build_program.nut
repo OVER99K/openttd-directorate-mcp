@@ -15,6 +15,8 @@ function D4_CompileBuildProgram(plan) {
 	if (start == null || goal == null) return { ok = false, error = D4_Error("program_missing_throats", "") };
 
 	local single_shuttle = D4_Has(plan.station_blueprint, "name") && plan.station_blueprint.name == "single_shuttle_1xN";
+	local initial_single_track = D4_Has(plan.policy, "initial_single_track") && plan.policy.initial_single_track == true;
+	local paired_mode = !single_shuttle && !initial_single_track;
 	/* The centerline starts on the throat tile, not the station tile.  For a
 	 * shuttle, preserve the actual station tiles as the predecessor/successor
 	 * context in the emitted endpoint primitives.  Apply preflight tests those
@@ -31,7 +33,7 @@ function D4_CompileBuildProgram(plan) {
 	local destination_return_entry = null;
 	local source_return_exit = null;
 	local return_endpoint_diagnostics = "";
-	if (!single_shuttle) {
+	if (paired_mode) {
 		/* The selected outbound platform can put the adjacent station platform on
 		 * either side after rotation. Try both bounded offsets and retain the one
 		 * whose reversed lane has legal endpoints at both station footprints. */
@@ -50,7 +52,7 @@ function D4_CompileBuildProgram(plan) {
 		if (destination_return_entry == null || source_return_exit == null) return { ok = false, error = D4_Error("program_return_station_endpoint_missing", return_endpoint_diagnostics) };
 	}
 	if (!D4_AppendLaneOperations(ops, "outbound", route.path, source_entry, destination_exit)) return { ok = false, error = D4_Error("program_invalid_outbound", "") };
-	if (!single_shuttle) {
+	if (paired_mode) {
 		/* D4_DeriveProgramLanes returns the second track in destination-to-source
 		 * order, so its station endpoints are deliberately reversed. */
 		if (!D4_AppendLaneOperations(ops, "return", paired.return_lane, destination_return_entry, source_return_exit)) return { ok = false, error = D4_Error("program_invalid_return", "") };

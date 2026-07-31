@@ -216,6 +216,8 @@ test("Initial paired corridor remains signal-free for single-train commissioning
   const program = readFileSync(join(gameDir, "build_program.nut"), "utf8");
   assert.doesNotMatch(program, /op_id = "signal\.(?:outbound|return)\.0"/);
   assert.match(program, /signals belong to later capacity expansion/);
+  assert.match(program, /initial_single_track/);
+  assert.match(program, /paired_mode = !single_shuttle && !initial_single_track/);
 });
 
 test("Paired corridor connects its outbound lane to both station platforms", () => {
