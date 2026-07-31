@@ -97,7 +97,7 @@ function D4_BuildBlueprint(name, rotation, origin, overrides) {
 }
 
 function D4_GetBlueprintDefinitions() {
-	return {
+	local defs = {
 		single_shuttle_1xN = {
 			origin = { x = 0, y = 0 },
 			station_name = "single_shuttle_1xN",
@@ -141,6 +141,15 @@ function D4_GetBlueprintDefinitions() {
 		through_hub_4x7 = {
 			origin = { x = 0, y = 0 },
 			station_name = "through_hub_4x7",
+			station_id = GSStation.STATION_NEW,
+			tiles = [],
+			required_clear = [],
+			allowed_existing = [],
+			ports = {},
+		},
+		through_hub_2x4 = {
+			origin = { x = 0, y = 0 },
+			station_name = "through_hub_2x4",
 			station_id = GSStation.STATION_NEW,
 			tiles = [],
 			required_clear = [],
@@ -213,10 +222,12 @@ function D4_GetBlueprintDefinitions() {
 			},
 		},
 	};
+	D4_SetupThroughHub(defs, "through_hub_4x7", 4, 7);
+	D4_SetupThroughHub(defs, "through_hub_2x4", 2, 4);
+	return defs;
 }
 
-function D4_SetupThroughHub() {
-	local defs = D4_GetBlueprintDefinitions();
+function D4_SetupThroughHub(defs, name, num_platforms, platform_length) {
 	local tiles = [];
 	local required = [];
 	local ports = {
@@ -225,8 +236,6 @@ function D4_SetupThroughHub() {
 		throat_sw = [],
 		feeder_port = [],
 	};
-	local num_platforms = 4;
-	local platform_length = 7;
 	for (local track = 0; track < num_platforms; track++) {
 		for (local cell = 0; cell < platform_length; cell++) {
 			local x = cell;
@@ -252,13 +261,11 @@ function D4_SetupThroughHub() {
 	ports.feeder_port = [{ x = -1, y = 1 }, { x = -1, y = 2 }];
 	required.append({ x = -1, y = 1 });
 	required.append({ x = -1, y = 2 });
-	defs.through_hub_4x7.tiles = tiles;
-	defs.through_hub_4x7.required_clear = required;
-	defs.through_hub_4x7.allowed_existing = [];
-	defs.through_hub_4x7.ports = ports;
+	defs[name].tiles = tiles;
+	defs[name].required_clear = required;
+	defs[name].allowed_existing = [];
+	defs[name].ports = ports;
 }
-
-D4_SetupThroughHub();
 
 function D4_PreflightBlueprint(blueprint, company_id, test_only) {
 	if (!blueprint.ok) return { ok = false, error = blueprint.error };

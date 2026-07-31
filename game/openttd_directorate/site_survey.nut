@@ -1,6 +1,8 @@
 function D4_StationSpreadLimit() {
-	local spread = GSController.GetSetting("station_spread");
-	if (typeof spread == "integer") return D4_ClampInt(spread, DIRECTORATE_M4_MAX_STATION_SPREAD, 4, 64);
+	if (GSGameSettings.IsValid("station.station_spread")) {
+		local spread = GSGameSettings.GetValue("station.station_spread");
+		if (typeof spread == "integer") return D4_ClampInt(spread, DIRECTORATE_M4_MAX_STATION_SPREAD, 4, 64);
+	}
 	return DIRECTORATE_M4_MAX_STATION_SPREAD;
 }
 

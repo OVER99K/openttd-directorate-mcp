@@ -159,6 +159,24 @@ test("Single-shuttle routing uses the real station tiles as endpoint context", (
   assert.match(gate, /entries_each !== 111/);
 });
 
+test("Through-hub blueprint is populated in every definition table", () => {
+  const blueprint = readFileSync(join(gameDir, "blueprint.nut"), "utf8");
+  assert.match(blueprint, /local defs = \{/);
+  assert.match(blueprint, /D4_SetupThroughHub\(defs, "through_hub_4x7", 4, 7\);/);
+  assert.match(blueprint, /D4_SetupThroughHub\(defs, "through_hub_2x4", 2, 4\);\s*return defs;/);
+  assert.match(blueprint, /function D4_SetupThroughHub\(defs, name, num_platforms, platform_length\)/);
+  assert.match(blueprint, /defs\[name\]\.tiles = tiles;/);
+  assert.doesNotMatch(blueprint, /function D4_SetupThroughHub\(\)\s*\{\s*local defs = D4_GetBlueprintDefinitions\(\)/);
+  assert.doesNotMatch(blueprint, /\nD4_SetupThroughHub\(\);/);
+});
+
+test("Station spread reads the live OpenTTD game setting", () => {
+  const survey = readFileSync(join(gameDir, "site_survey.nut"), "utf8");
+  assert.match(survey, /GSGameSettings\.IsValid\("station\.station_spread"\)/);
+  assert.match(survey, /GSGameSettings\.GetValue\("station\.station_spread"\)/);
+  assert.doesNotMatch(survey, /GSController\.GetSetting\("station_spread"\)/);
+});
+
 test("Station survey uses authoritative producer and acceptor catchment tiles", () => {
   const survey = readFileSync(join(gameDir, "site_survey.nut"), "utf8");
   const store = readFileSync(join(gameDir, "plan_store.nut"), "utf8");
