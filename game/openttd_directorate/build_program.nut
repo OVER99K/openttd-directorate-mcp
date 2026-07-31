@@ -31,9 +31,11 @@ function D4_CompileBuildProgram(plan) {
 	}
 	if (!D4_AppendLaneOperations(ops, "outbound", route.path, source_entry, destination_exit)) return { ok = false, error = D4_Error("program_invalid_outbound", "") };
 	if (!single_shuttle) {
-		local source_return_entry = D4_NearestBlueprintPortPoint(plan.station_blueprint, "platform_body", paired.return_lane[0]);
-		local destination_return_exit = D4_NearestBlueprintPortPoint(plan.destination_blueprint, "platform_body", paired.return_lane[paired.return_lane.len() - 1]);
-		if (!D4_AppendLaneOperations(ops, "return", paired.return_lane, source_return_entry, destination_return_exit)) return { ok = false, error = D4_Error("program_invalid_return", "") };
+		/* D4_DeriveProgramLanes returns the second track in destination-to-source
+		 * order, so its station endpoints are deliberately reversed. */
+		local destination_return_entry = D4_NearestBlueprintPortPoint(plan.destination_blueprint, "platform_body", paired.return_lane[0]);
+		local source_return_exit = D4_NearestBlueprintPortPoint(plan.station_blueprint, "platform_body", paired.return_lane[paired.return_lane.len() - 1]);
+		if (!D4_AppendLaneOperations(ops, "return", paired.return_lane, destination_return_entry, source_return_exit)) return { ok = false, error = D4_Error("program_invalid_return", "") };
 	}
 
 	/* A paired return lane occupies the outbound route's right-hand shoulder.
