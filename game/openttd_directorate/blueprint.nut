@@ -244,15 +244,19 @@ function D4_SetupThroughHub(defs, name, num_platforms, platform_length) {
 			ports.platform_body.append({ x = x, y = y });
 		}
 	}
+	/* Station tracks run along the platform-length axis. Through throats must
+	 * continue that axis at each platform end; the old top/bottom ports were
+	 * perpendicular to the station tracks and produced trains parked against
+	 * the side of an otherwise "connected" station. */
+	for (local y = 0; y < num_platforms; y++) {
+		ports.throat_ne.append({ x = platform_length, y = y });
+		ports.throat_sw.append({ x = -1, y = y });
+		required.append({ x = platform_length, y = y });
+		required.append({ x = -1, y = y });
+	}
 	for (local x = 0; x < platform_length; x++) {
-		ports.throat_ne.append({ x = x, y = -1 });
-		ports.throat_sw.append({ x = x, y = num_platforms });
 		required.append({ x = x, y = -1 });
 		required.append({ x = x, y = num_platforms });
-	}
-	for (local y = 0; y < num_platforms; y++) {
-		required.append({ x = -1, y = y });
-		required.append({ x = platform_length, y = y });
 	}
 	for (local x = 1; x < platform_length - 1; x++) {
 		required.append({ x = x, y = -2 });

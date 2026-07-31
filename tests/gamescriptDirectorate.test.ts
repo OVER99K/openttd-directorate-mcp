@@ -198,6 +198,9 @@ test("Through-hub blueprint is populated in every definition table", () => {
   assert.match(blueprint, /D4_SetupThroughHub\(defs, "through_hub_2x4", 2, 4\);\s*return defs;/);
   assert.match(blueprint, /function D4_SetupThroughHub\(defs, name, num_platforms, platform_length\)/);
   assert.match(blueprint, /defs\[name\]\.tiles = tiles;/);
+  assert.match(blueprint, /ports\.throat_ne\.append\(\{ x = platform_length, y = y \}\)/);
+  assert.match(blueprint, /ports\.throat_sw\.append\(\{ x = -1, y = y \}\)/);
+  assert.doesNotMatch(blueprint, /ports\.throat_ne\.append\(\{ x = x, y = -1 \}\)/);
   assert.doesNotMatch(blueprint, /function D4_SetupThroughHub\(\)\s*\{\s*local defs = D4_GetBlueprintDefinitions\(\)/);
   assert.doesNotMatch(blueprint, /\nD4_SetupThroughHub\(\);/);
 });
@@ -220,6 +223,7 @@ test("Paired corridor connects its outbound lane to both station platforms", () 
   assert.match(program, /D4_NearestBlueprintPortPoint\(plan\.station_blueprint, "platform_body", start\)/);
   assert.match(program, /D4_NearestBlueprintPortPoint\(plan\.destination_blueprint, "platform_body", goal\)/);
   assert.match(program, /D4_AppendLaneOperations\(ops, "outbound", route\.path, source_entry, destination_exit\)/);
+  assert.match(program, /D4_AppendLaneOperations\(ops, "return", paired\.return_lane, source_return_entry, destination_return_exit\)/);
   assert.match(program, /function D4_PointInStationRect\(point, station\)/);
   assert.match(program, /D4_PointInStationRect\(rail\.prev_point, station\)/);
   assert.match(program, /D4_PointInStationRect\(rail\.next_point, station\)/);
