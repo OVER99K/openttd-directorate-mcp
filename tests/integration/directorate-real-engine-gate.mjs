@@ -61,7 +61,40 @@ function writeConfig() {
   cpSync(join(repoRoot, "game/openttd_directorate"), join(fixture, "game/openttd_directorate"), { recursive: true });
   const fixtureBridgePath = join(fixture, "game/openttd_directorate/bridge.nut");
   const fixtureBridge = readFileSync(fixtureBridgePath, "utf8");
-  const migrationProbe = `\t\tif (payload.command == "signal_api_probe") {
+  const migrationProbe = `\t\tif (payload.command == "wagon_chain_probe_seed") {
+\t\t\tlocal mode = GSCompanyMode(payload.company_id);
+\t\t\tlocal plan = this.store.GetPlan(payload.params.plan_id);
+\t\t\tif (!GSCompanyMode.IsValid() || plan == null || !D4_SelectRailType()) return { ok = false, error = D4_Error("probe_company_mode_failed", payload.company_id.tostring()) };
+\t\t\tlocal cargo_pick = D4_PickRouteCargo(plan.intent.source_industry_id, plan.intent.destination_industry_id, null);
+\t\t\tlocal probe_route = { company_id = payload.company_id, plan_id = payload.params.plan_id, cargo_type = cargo_pick.cargo_type, source_station_tile = D4_StationTileFromPlan(plan, "source"), destination_station_tile = D4_StationTileFromPlan(plan, "destination") };
+\t\t\tlocal orders = D4_ConfigureRouteOrders(probe_route, payload.company_id, this.store);
+\t\t\tlocal rail_type = GSRail.GetCurrentRailType();
+\t\t\tlocal wagon_engine = null;
+\t\t\tfor (local candidate = 0; candidate < 2048; candidate++) {
+\t\t\t\tif (!GSEngine.IsValidEngine(candidate) || !GSEngine.IsBuildable(candidate)) continue;
+\t\t\t\tif (GSEngine.GetVehicleType(candidate) != GSVehicle.VT_RAIL || !GSEngine.IsWagon(candidate)) continue;
+\t\t\t\tif (!GSEngine.CanRunOnRail(candidate, rail_type) || !GSEngine.CanRefitCargo(candidate, cargo_pick.cargo_type)) continue;
+\t\t\t\twagon_engine = candidate;
+\t\t\t\tbreak;
+\t\t\t}
+\t\t\tif (!cargo_pick.ok || !orders.ok || wagon_engine == null) return { ok = false, error = D4_Error("probe_wagon_unavailable", "") };
+\t\t\tlocal wagon_id = GSVehicle.BuildVehicle(orders.depot_tile, wagon_engine);
+\t\t\tif (!GSVehicle.IsValidVehicle(wagon_id)) return { ok = false, error = D4_Error("probe_wagon_build_failed", wagon_engine.tostring()) };
+\t\t\treturn { ok = true, payload = { vehicle_id = wagon_id, count = GSVehicle.GetNumWagons(wagon_id), engine = wagon_engine } };
+\t\t}
+\t\tif (payload.command == "wagon_chain_probe_status") {
+\t\t\tlocal mode = GSCompanyMode(payload.company_id);
+\t\t\tlocal vehicle_id = payload.params.vehicle_id;
+\t\t\treturn { ok = GSCompanyMode.IsValid() && GSVehicle.IsValidVehicle(vehicle_id), payload = { valid = GSVehicle.IsValidVehicle(vehicle_id), primary = GSVehicle.IsValidVehicle(vehicle_id) ? GSVehicle.IsPrimaryVehicle(vehicle_id) : true, count = GSVehicle.IsValidVehicle(vehicle_id) ? GSVehicle.GetNumWagons(vehicle_id) : -1 } };
+\t\t}
+\t\tif (payload.command == "wagon_chain_probe_cleanup") {
+\t\t\tlocal mode = GSCompanyMode(payload.company_id);
+\t\t\tlocal vehicle_id = payload.params.vehicle_id;
+\t\t\tif (!GSCompanyMode.IsValid() || !GSVehicle.IsValidVehicle(vehicle_id) || GSVehicle.IsPrimaryVehicle(vehicle_id)) return { ok = false, error = D4_Error("probe_wagon_cleanup_invalid", vehicle_id.tostring()) };
+\t\t\tlocal sold = GSVehicle.SellWagonChain(vehicle_id, 0);
+\t\t\treturn { ok = sold && !GSVehicle.IsValidVehicle(vehicle_id), payload = { sold = sold, valid = GSVehicle.IsValidVehicle(vehicle_id) } };
+\t\t}
+\t\tif (payload.command == "signal_api_probe") {
 \t\t\tlocal mode = GSCompanyMode(payload.company_id);
 \t\t\tif (!GSCompanyMode.IsValid() || !D4_SelectRailType()) return { ok = false, error = D4_Error("probe_company_mode_failed", payload.company_id.tostring()) };
 \t\t\tlocal plan = this.store.GetPlan(payload.params.plan_id);
@@ -381,6 +414,47 @@ async function main() {
       if (observeApplied.payload?.plans?.[0]?.state !== "applied") throw new Error(`plan not applied: ${JSON.stringify(observeApplied)}`);
       evidence.steps.push({ name: "observe_after_commit", response: observeApplied });
 
+      const wagonSeedWire = await client.requestGameScript("execute", {
+        company_id: 0,
+        command: "wagon_chain_probe_seed",
+        params: { plan_id: "directorate-gate-plan" },
+      });
+      const wagonSeed = assertOk("wagon_chain_probe_seed", wagonSeedWire.payload);
+      const seededWagonId = wagonSeed.payload?.vehicle_id;
+      if (!Number.isInteger(seededWagonId) || wagonSeed.payload?.count !== 1) throw new Error(`free-wagon probe did not seed one wagon: ${JSON.stringify(wagonSeed)}`);
+      evidence.steps.push({ name: "wagon_chain_probe_seed", response: wagonSeedWire });
+
+      const blockedCommission = await request(handlers, "commission", {
+        company_id: 0,
+        plan_id: "directorate-gate-plan",
+        route_id: "directorate-gate-route-blocked-stock",
+        cargo_label: "",
+      });
+      if (blockedCommission.ok !== false || blockedCommission.payload?.error?.code !== "depot_free_stock_present") {
+        throw new Error(`commissioning did not refuse occupied depot stock: ${JSON.stringify(blockedCommission)}`);
+      }
+      evidence.steps.push({ name: "commission_refuses_free_stock", response: blockedCommission });
+
+      const wagonStatusWire = await client.requestGameScript("execute", {
+        company_id: 0,
+        command: "wagon_chain_probe_status",
+        params: { vehicle_id: seededWagonId },
+      });
+      const wagonStatus = assertOk("wagon_chain_probe_status", wagonStatusWire.payload);
+      if (wagonStatus.payload?.valid !== true || wagonStatus.payload?.primary !== false || wagonStatus.payload?.count !== 1) {
+        throw new Error(`refused commission mutated pre-existing free stock: ${JSON.stringify(wagonStatus)}`);
+      }
+      evidence.steps.push({ name: "wagon_chain_probe_status", response: wagonStatusWire });
+
+      const wagonCleanupWire = await client.requestGameScript("execute", {
+        company_id: 0,
+        command: "wagon_chain_probe_cleanup",
+        params: { vehicle_id: seededWagonId },
+      });
+      const wagonCleanup = assertOk("wagon_chain_probe_cleanup", wagonCleanupWire.payload);
+      if (wagonCleanup.payload?.sold !== true || wagonCleanup.payload?.valid !== false) throw new Error(`free-wagon probe cleanup failed: ${JSON.stringify(wagonCleanup)}`);
+      evidence.steps.push({ name: "wagon_chain_probe_cleanup", response: wagonCleanupWire });
+
       const commission = assertRouteCommissioned(
         "commission_route",
         await request(handlers, "commission", {
@@ -398,8 +472,9 @@ async function main() {
 
       const observeRoutes = assertOk("observe_routes", await request(handlers, "observe", { scope: "routes", company_id: 0, limit: 16 }));
       const routes = observeRoutes.payload?.routes ?? [];
-      if (routes.length !== 1 || routes[0]?.route_id !== "directorate-gate-route") throw new Error(`expected one route, got ${JSON.stringify(routes)}`);
-      if (routes[0]?.state !== "commissioned") throw new Error(`route not commissioned: ${JSON.stringify(routes[0])}`);
+      const commissionedRoute = routes.find((route) => route?.route_id === "directorate-gate-route");
+      const blockedRoute = routes.find((route) => route?.route_id === "directorate-gate-route-blocked-stock");
+      if (commissionedRoute?.state !== "commissioned" || blockedRoute?.state !== "failed") throw new Error(`expected commissioned and safely blocked routes: ${JSON.stringify(routes)}`);
       evidence.steps.push({ name: "observe_routes", response: observeRoutes });
 
       const verifyTopology = assertOk("verify_topology", await request(handlers, "verify", { company_id: 0, route_id: "directorate-gate-route", level: "topology" }));
@@ -513,7 +588,9 @@ async function main() {
 
       const observeAfterRestart = assertOk("observe_routes_after_restart", await request(replayHandlers, "observe", { scope: "routes", company_id: 0, limit: 16 }));
       const afterRoutes = observeAfterRestart.payload?.routes ?? [];
-      if (afterRoutes.length !== 1) throw new Error(`expected one persisted route after restart, got ${JSON.stringify(afterRoutes)}`);
+      const persistedCommissioned = afterRoutes.find((route) => route?.route_id === "directorate-gate-route");
+      const persistedBlocked = afterRoutes.find((route) => route?.route_id === "directorate-gate-route-blocked-stock");
+      if (persistedCommissioned?.state !== "commissioned" || persistedBlocked?.state !== "failed") throw new Error(`expected persisted commissioned and blocked routes after restart, got ${JSON.stringify(afterRoutes)}`);
       evidence.steps.push({ name: "observe_routes_after_restart", response: observeAfterRestart });
 
       const verifyAfterRestart = assertOk("verify_topology_after_restart", await request(replayHandlers, "verify", { company_id: 0, route_id: "directorate-gate-route", level: "topology" }));

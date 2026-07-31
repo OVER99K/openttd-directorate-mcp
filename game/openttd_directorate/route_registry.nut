@@ -319,7 +319,7 @@ function D4_CommissionRoute(plan_store, registry, company_id, plan_id, route_id,
 	route.state = "commissioned";
 	route.commissioned_tick = D4_Tick();
 	route.updated_tick = D4_Tick();
-	return { ok = true, route = registry.Summary(route), vehicle_id = vehicle.vehicle_id, cargo_type = cargo_pick.cargo_type, wagon_count = vehicle.wagon_count, length = vehicle.length, capacity = vehicle.capacity };
+	return { ok = true, route = registry.Summary(route), vehicle_id = vehicle.vehicle_id, cargo_type = cargo_pick.cargo_type, wagon_count = vehicle.wagon_count, reused_wagons = vehicle.reused_wagons, length = vehicle.length, capacity = vehicle.capacity };
 }
 
 function D4_VerifyRouteTopology(route, company_id) {
@@ -386,6 +386,16 @@ function D4_RoutePlatformLength(plan) {
 	return 1;
 }
 
+function D4_HasFreeWagonStockAtDepot(depot_tile) {
+	local vehicles = GSVehicleList();
+	for (local vehicle_id = vehicles.Begin(); !vehicles.IsEnd(); vehicle_id = vehicles.Next()) {
+		if (!GSVehicle.IsValidVehicle(vehicle_id) || GSVehicle.IsPrimaryVehicle(vehicle_id)) continue;
+		if (GSVehicle.GetVehicleType(vehicle_id) != GSVehicle.VT_RAIL) continue;
+		if (GSVehicle.IsStoppedInDepot(vehicle_id) && GSVehicle.GetLocation(vehicle_id) == depot_tile) return true;
+	}
+	return false;
+}
+
 function D4_BuildRouteVehicle(route, company_id, plan_store) {
 	local plan = plan_store.GetPlan(route.plan_id);
 	if (plan == null) return { ok = false, error = D4_Error("plan_not_found", route.route_id) };
@@ -401,12 +411,14 @@ function D4_BuildRouteVehicle(route, company_id, plan_store) {
 	for (local candidate = 0; candidate < 2048; candidate++) {
 		if (!GSEngine.IsValidEngine(candidate) || !GSEngine.IsBuildable(candidate)) continue;
 		if (GSEngine.GetVehicleType(candidate) != GSVehicle.VT_RAIL || !GSEngine.IsWagon(candidate)) continue;
+		if (!GSEngine.CanRunOnRail(candidate, rail_type)) continue;
 		if (!GSEngine.CanRefitCargo(candidate, route.cargo_type)) continue;
 		wagon_engine = candidate;
 		break;
 	}
 	if (wagon_engine == null) return { ok = false, error = D4_Error("no_suitable_wagon", route.cargo_type.tostring()) };
 	local target_wagons = D4_ClampInt(D4_Has(plan.policy, "wagon_count") ? plan.policy.wagon_count : 1, 1, 1, 12);
+	if (D4_HasFreeWagonStockAtDepot(orders.depot_tile)) return { ok = false, error = D4_Error("depot_free_stock_present", orders.depot_tile.tostring()) };
 	local estimated_vehicle_cost = GSEngine.GetPrice(engine_id) + GSEngine.GetPrice(wagon_engine) * target_wagons;
 	if (!D4_EnsureCompanyFunds(company_id, estimated_vehicle_cost)) return { ok = false, error = D4_Error("insufficient_commission_funds", estimated_vehicle_cost.tostring()) };
 	local vehicle_id = GSVehicle.BuildVehicle(orders.depot_tile, engine_id);
@@ -416,20 +428,25 @@ function D4_BuildRouteVehicle(route, company_id, plan_store) {
 	local platform_units = D4_RoutePlatformLength(plan) * 16;
 	for (local index = 0; index < target_wagons; index++) {
 		local wagon_id = GSVehicle.BuildVehicle(orders.depot_tile, wagon_engine);
-		/* OpenTTD may return a non-front wagon ID that fails IsValidVehicle()
-		 * when it joined an existing free-wagon chain. The documented recovery
-		 * is to pass that returned ID directly to MoveWagon. */
-		if (!GSVehicle.MoveWagon(wagon_id, 0, vehicle_id, 0)) {
-			if (GSVehicle.IsValidVehicle(wagon_id)) GSVehicle.SellVehicle(wagon_id);
-			break;
-		}
-		if (GSVehicle.GetLength(vehicle_id) > platform_units) {
+		if (!GSVehicle.IsValidVehicle(wagon_id)) {
 			GSVehicle.SellVehicle(vehicle_id);
-			return { ok = false, error = D4_Error("platform_too_short", platform_units.tostring()) };
+			return { ok = false, error = D4_Error("wagon_build_failed", wagon_engine.tostring()) };
 		}
-		/* Refit the now-valid whole consist; wagon IDs inside a train are not
-		 * guaranteed to remain independently valid script vehicle IDs. */
-		GSVehicle.RefitVehicle(vehicle_id, route.cargo_type);
+		local destination_wagon = GSVehicle.GetNumWagons(vehicle_id) - 1;
+		if (!GSVehicle.MoveWagon(wagon_id, 0, vehicle_id, destination_wagon)) {
+			GSVehicle.SellWagonChain(wagon_id, 0);
+			GSVehicle.SellVehicle(vehicle_id);
+			return { ok = false, error = D4_Error("wagon_move_failed", wagon_id.tostring() + ":0") };
+		}
+		local consist_length = GSVehicle.GetLength(vehicle_id);
+		if (consist_length > platform_units) {
+			GSVehicle.SellVehicle(vehicle_id);
+			return { ok = false, error = D4_Error("platform_too_short", consist_length.tostring() + ":" + platform_units.tostring()) };
+		}
+		if (!GSVehicle.RefitVehicle(vehicle_id, route.cargo_type)) {
+			GSVehicle.SellVehicle(vehicle_id);
+			return { ok = false, error = D4_Error("vehicle_refit_failed", route.cargo_type.tostring()) };
+		}
 		built_wagons++;
 		build_cost += GSEngine.GetPrice(wagon_engine);
 	}
@@ -452,7 +469,7 @@ function D4_BuildRouteVehicle(route, company_id, plan_store) {
 		GSVehicle.SellVehicle(vehicle_id);
 		return { ok = false, error = D4_Error("append_depot_order_failed", vehicle_id.tostring()) };
 	}
-	return { ok = true, vehicle_id = vehicle_id, build_cost = build_cost, wagon_count = built_wagons, length = GSVehicle.GetLength(vehicle_id), capacity = GSVehicle.GetCapacity(vehicle_id, route.cargo_type) };
+	return { ok = true, vehicle_id = vehicle_id, build_cost = build_cost, wagon_count = built_wagons, reused_wagons = 0, length = GSVehicle.GetLength(vehicle_id), capacity = GSVehicle.GetCapacity(vehicle_id, route.cargo_type) };
 }
 
 function D4_UpdateRouteHealth(route) {

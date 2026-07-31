@@ -252,14 +252,21 @@ test("Paired corridor connects its outbound lane to both station platforms", () 
   assert.doesNotMatch(program, /rail\.next == station\.tile/);
 });
 
-test("Commissioning scales cargo consists within the actual station length", () => {
+test("Commissioning rejects occupied depots and bounds a fresh consist to the station", () => {
   const routes = readFileSync(join(gameDir, "route_registry.nut"), "utf8");
-  assert.match(routes, /wagon_count/);
-  assert.match(routes, /MoveWagon\(wagon_id, 0, vehicle_id, 0\)/);
-  assert.match(routes, /GSVehicle\.GetLength\(vehicle_id\) > platform_units/);
-  assert.match(routes, /documented recovery[\s\S]*MoveWagon/);
+  assert.match(routes, /function D4_HasFreeWagonStockAtDepot\(depot_tile\)/);
+  assert.match(routes, /GSVehicleList\(\)/);
+  assert.match(routes, /GSVehicle\.IsPrimaryVehicle\(vehicle_id\)/);
+  assert.match(routes, /GSVehicle\.IsStoppedInDepot\(vehicle_id\)/);
+  assert.match(routes, /GSEngine\.CanRunOnRail\(candidate, rail_type\)/);
+  assert.match(routes, /depot_free_stock_present/);
+  assert.match(routes, /MoveWagon\(wagon_id, 0, vehicle_id, destination_wagon\)/);
+  assert.match(routes, /SellWagonChain\(wagon_id, 0\)/);
+  assert.match(routes, /wagon_build_failed/);
+  assert.match(routes, /wagon_move_failed/);
+  assert.match(routes, /consist_length > platform_units/);
   assert.match(routes, /built_wagons < 1 \|\| GSVehicle\.GetCapacity/);
-  assert.match(routes, /build_cost \+= GSEngine\.GetPrice\(wagon_engine\)/);
+  assert.match(routes, /reused_wagons/);
   assert.match(routes, /function D4_ListIndustriesForCargo/);
   const bridge = readFileSync(join(gameDir, "bridge.nut"), "utf8");
   assert.match(bridge, /payload\.command == "list_industries"/);
