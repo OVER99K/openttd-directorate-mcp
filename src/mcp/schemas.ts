@@ -18,7 +18,7 @@ export const observeSchema = z
   })
   .strict();
 
-export const planSchema = z
+export const planToolSchema = z
   .object({
     intent: jsonObject,
     company_id: companyId,
@@ -26,18 +26,19 @@ export const planSchema = z
     plan_id: boundedId.optional(),
     revision: z.number().int().min(0).optional(),
   })
-  .strict()
-  .superRefine((value, ctx) => {
-    for (const path of findForbiddenPlanningPaths({ intent: value.intent, policy: value.policy })) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "Normal planning rejects tile-list/path inputs; provide intent and constraints instead.",
-        path,
-      });
-    }
-  });
+  .strict();
 
-export const applySchema = z
+export const planSchema = planToolSchema.superRefine((value, ctx) => {
+  for (const path of findForbiddenPlanningPaths({ intent: value.intent, policy: value.policy })) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Normal planning rejects tile-list/path inputs; provide intent and constraints instead.",
+      path,
+    });
+  }
+});
+
+export const applyToolSchema = z
   .object({
     company_id: companyId,
     plan_id: boundedId,
@@ -47,17 +48,18 @@ export const applySchema = z
     target_operation_id: boundedOperationId.optional(),
     reserve: z.number().int().min(0).max(10_000_000).optional(),
   })
-  .strict()
-  .superRefine((value, ctx) => {
-    if (value.phase === "rollback" && value.target_operation_id === undefined) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["target_operation_id"], message: "rollback requires target_operation_id" });
-    }
-    if (value.phase === "rollback" && value.target_operation_id === value.operation_id) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["operation_id"], message: "rollback operation_id must be distinct from target_operation_id" });
-    }
-  });
+  .strict();
 
-export const verifySchema = z
+export const applySchema = applyToolSchema.superRefine((value, ctx) => {
+  if (value.phase === "rollback" && value.target_operation_id === undefined) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["target_operation_id"], message: "rollback requires target_operation_id" });
+  }
+  if (value.phase === "rollback" && value.target_operation_id === value.operation_id) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["operation_id"], message: "rollback operation_id must be distinct from target_operation_id" });
+  }
+});
+
+export const verifyToolSchema = z
   .object({
     company_id: companyId,
     route_id: boundedId.optional(),
@@ -65,17 +67,18 @@ export const verifySchema = z
     operation_id: boundedOperationId.optional(),
     level: z.enum(["topology", "commissioning", "economic"]),
   })
-  .strict()
-  .superRefine((value, ctx) => {
-    const provided = [value.route_id, value.plan_id, value.operation_id].filter((item) => item !== undefined);
-    if (provided.length !== 1) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["route_id"],
-        message: "verify requires exactly one of route_id, plan_id, or operation_id",
-      });
-    }
-  });
+  .strict();
+
+export const verifySchema = verifyToolSchema.superRefine((value, ctx) => {
+  const provided = [value.route_id, value.plan_id, value.operation_id].filter((item) => item !== undefined);
+  if (provided.length !== 1) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["route_id"],
+      message: "verify requires exactly one of route_id, plan_id, or operation_id",
+    });
+  }
+});
 
 export const commissionSchema = z
   .object({
