@@ -416,19 +416,20 @@ function D4_BuildRouteVehicle(route, company_id, plan_store) {
 	local platform_units = D4_RoutePlatformLength(plan) * 16;
 	for (local index = 0; index < target_wagons; index++) {
 		local wagon_id = GSVehicle.BuildVehicle(orders.depot_tile, wagon_engine);
-		if (!GSVehicle.IsValidVehicle(wagon_id)) break;
-		if (!GSVehicle.RefitVehicle(wagon_id, route.cargo_type)) {
-			GSVehicle.SellVehicle(wagon_id);
-			break;
-		}
-		if (GSVehicle.GetLength(vehicle_id) + GSVehicle.GetLength(wagon_id) > platform_units) {
-			GSVehicle.SellVehicle(wagon_id);
-			break;
-		}
+		/* OpenTTD may return a non-front wagon ID that fails IsValidVehicle()
+		 * when it joined an existing free-wagon chain. The documented recovery
+		 * is to pass that returned ID directly to MoveWagon. */
 		if (!GSVehicle.MoveWagon(wagon_id, 0, vehicle_id, 0)) {
-			GSVehicle.SellVehicle(wagon_id);
+			if (GSVehicle.IsValidVehicle(wagon_id)) GSVehicle.SellVehicle(wagon_id);
 			break;
 		}
+		if (GSVehicle.GetLength(vehicle_id) > platform_units) {
+			GSVehicle.SellVehicle(vehicle_id);
+			return { ok = false, error = D4_Error("platform_too_short", platform_units.tostring()) };
+		}
+		/* Refit the now-valid whole consist; wagon IDs inside a train are not
+		 * guaranteed to remain independently valid script vehicle IDs. */
+		GSVehicle.RefitVehicle(vehicle_id, route.cargo_type);
 		built_wagons++;
 		build_cost += GSEngine.GetPrice(wagon_engine);
 	}

@@ -328,7 +328,7 @@ async function main() {
           site_search_radius: 2,
           route_expansion_limit: 768,
           route_frontier_limit: 4096,
-          wagon_count: 3,
+          wagon_count: 1,
         },
       });
       evidence.steps.push({ name: "plan", response: assertOk("plan", plan) });

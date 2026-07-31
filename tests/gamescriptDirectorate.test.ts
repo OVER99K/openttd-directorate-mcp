@@ -255,7 +255,9 @@ test("Paired corridor connects its outbound lane to both station platforms", () 
 test("Commissioning scales cargo consists within the actual station length", () => {
   const routes = readFileSync(join(gameDir, "route_registry.nut"), "utf8");
   assert.match(routes, /wagon_count/);
-  assert.match(routes, /GSVehicle\.GetLength\(vehicle_id\) \+ GSVehicle\.GetLength\(wagon_id\) > platform_units/);
+  assert.match(routes, /MoveWagon\(wagon_id, 0, vehicle_id, 0\)/);
+  assert.match(routes, /GSVehicle\.GetLength\(vehicle_id\) > platform_units/);
+  assert.match(routes, /documented recovery[\s\S]*MoveWagon/);
   assert.match(routes, /built_wagons < 1 \|\| GSVehicle\.GetCapacity/);
   assert.match(routes, /build_cost \+= GSEngine\.GetPrice\(wagon_engine\)/);
   assert.match(routes, /function D4_ListIndustriesForCargo/);
