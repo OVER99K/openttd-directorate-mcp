@@ -458,10 +458,21 @@ function D4_PreflightBuildProgram(program, company_id, reserve, enforce_funds = 
 	if (!GSCompanyMode.IsValid()) return { ok = false, error = D4_Error("invalid_company", company_id.tostring()) };
 	if (!D4_SelectRailType()) return { ok = false, error = D4_Error("rail_type_unavailable", company_id.tostring()) };
 	local tm = GSTestMode();
+	local tested_rails = {};
 	foreach (op in program.ops) {
+		/* GSTestMode validates each command without retaining prior mutations.
+		 * A signal planned on rail from this same transaction therefore cannot
+		 * be tested with BuildSignal yet; its rail primitive was already tested,
+		 * and commit performs authoritative signal readback after creating it. */
+		if (op.kind == "signal" && op.tile in tested_rails && !GSRail.IsRailTile(op.tile)) {
+			cost += GSRail.GetBuildCost(GSRail.GetCurrentRailType(), GSRail.BT_SIGNAL);
+			if (enforce_funds && !D4_CanAfford(company_id, reserve, cost)) return { ok = false, error = D4_Error("insufficient_funds", op.op_id), failed_op = op.op_id, cost = cost, reserve = reserve, mutation = false };
+			continue;
+		}
 		local result = D4_ExecuteProgramOperation(op, company_id, true);
 		if (!result.ok) return { ok = false, error = D4_Error("preflight_failed", op.op_id), failed_op = op.op_id, failure = result.failure, cost = cost, mutation = false };
 		cost += result.cost;
+		if (op.kind == "rail_connection") tested_rails[op.tile] <- true;
 		if (enforce_funds && !D4_CanAfford(company_id, reserve, cost)) return { ok = false, error = D4_Error("insufficient_funds", op.op_id), failed_op = op.op_id, cost = cost, reserve = reserve, mutation = false };
 	}
 	return { ok = true, cost = cost, reserve = reserve, affordable = D4_CanAfford(company_id, reserve, cost), mutation = false };

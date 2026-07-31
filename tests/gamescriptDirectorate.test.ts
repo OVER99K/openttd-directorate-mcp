@@ -223,6 +223,8 @@ test("Paired corridors emit bounded one-way PBS signals while staged single trac
   assert.match(program, /signal_type = GSRail\.SIGNALTYPE_PBS_ONEWAY/);
   assert.match(program, /front = D4_ToTile\(path\[i - 1\]\)/);
   assert.match(program, /incoming != outgoing/);
+  assert.match(program, /op\.kind == "signal" && op\.tile in tested_rails && !GSRail\.IsRailTile\(op\.tile\)/);
+  assert.match(program, /commit performs authoritative signal readback/);
   assert.match(program, /initial_single_track/);
   assert.match(program, /paired_mode = !single_shuttle && !initial_single_track/);
 });
