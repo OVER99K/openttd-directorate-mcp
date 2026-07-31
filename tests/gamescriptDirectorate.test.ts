@@ -250,6 +250,8 @@ test("Station survey uses authoritative producer and acceptor catchment tiles", 
   assert.doesNotMatch(survey, /abs\(tile\.point\.x - industry_location\.x\) \+ abs\(tile\.point\.y - industry_location\.y\)/);
   assert.match(store, /D4_SurveyStationSites\(plan\.company_id, source_id, "source", template/);
   assert.match(store, /D4_SurveyStationSites\(plan\.company_id, dest_id, "destination", template/);
+  assert.match(store, /site_pair_skip/);
+  assert.match(store, /pair_rank <= pair_skip/);
 });
 
 test("Planning input rejects tile lists and path inputs", () => {

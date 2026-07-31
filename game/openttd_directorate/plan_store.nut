@@ -148,32 +148,29 @@ class DirectorateM4PlanStore {
 			 * another; otherwise the route endpoint continuation points through the
 			 * back of the station and an open map is unsatisfiable. */
 			local excluded_pairs = {};
-			local candidate_program = null;
-			local candidate_pf = null;
 			local pair = null;
-			local attempts = 0;
-			/* A legal station footprint can still yield a blocked parallel rail or
-			 * endpoint. Try a small ranked set rather than hard-failing the single
-			 * cheapest geometric pair. The bound protects the GameScript budget. */
-			for (local pair_attempt = 0; pair_attempt < 4; pair_attempt++) {
+			local pair_skip = D4_ClampInt(D4_Has(plan.policy, "site_pair_skip") ? plan.policy.site_pair_skip : 0, 0, 0, 15);
+			/* Select a ranked alternative without running several yielding A* and
+			 * preflight programs in one bridge request. Callers can advance the
+			 * bounded site_pair_skip when a parallel lane is terrain-blocked. */
+			for (local pair_rank = 0; pair_rank <= pair_skip; pair_rank++) {
 				pair = D4_SelectBestSitePair(source_survey.candidates, dest_survey.candidates, excluded_pairs);
 				if (pair == null) break;
 				excluded_pairs[pair.source_index + ":" + pair.destination_index] <- true;
-				attempts++;
-				plan.source_site = pair.source;
-				plan.destination_site = pair.destination;
-				plan.station_blueprint = plan.source_site.blueprint;
-				plan.destination_blueprint = plan.destination_site.blueprint;
-				candidate_program = D4_CompileBuildProgram(plan);
-				candidate_pf = candidate_program.ok ? D4_PreflightBuildProgram(candidate_program, plan.company_id, 0) : candidate_program;
-				if (candidate_program.ok && candidate_pf.ok) break;
 			}
-			if (pair == null || candidate_program == null) return { ok = false, error = D4_Error("site_pair_orientation_not_found", plan.plan_id) };
+			if (pair == null) return { ok = false, error = D4_Error("site_pair_orientation_not_found", plan.plan_id) };
+			plan.source_site = pair.source;
+			plan.destination_site = pair.destination;
+			plan.station_blueprint = plan.source_site.blueprint;
+			plan.destination_blueprint = plan.destination_site.blueprint;
+			local candidate_program = D4_CompileBuildProgram(plan);
+			local candidate_pf = candidate_program.ok ? D4_PreflightBuildProgram(candidate_program, plan.company_id, 0) : candidate_program;
 			if (!candidate_program.ok || !candidate_pf.ok) return {
 				ok = false,
 				error = D4_Error("no_legal_site_pair", plan.plan_id),
 				payload = {
-					attempts = attempts,
+					attempts = 1,
+					pair_rank = pair_skip,
 					source = { origin = plan.source_site.origin, rotation = plan.source_site.rotation },
 					destination = { origin = plan.destination_site.origin, rotation = plan.destination_site.rotation },
 					last_failure = candidate_pf,
