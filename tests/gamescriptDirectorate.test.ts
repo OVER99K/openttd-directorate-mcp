@@ -228,6 +228,10 @@ test("Paired corridor connects its outbound lane to both station platforms", () 
   assert.match(program, /D4_IsAdjacent\(point, lane_tile\)/);
   assert.match(program, /foreach \(side_turns in \[1, 3\]\)/);
   assert.match(program, /function D4_DeriveProgramLanes\(path, side_turns = 1\)/);
+  assert.match(program, /required_start_dir = D4_DirectionBetween\(source_entry, start\)/);
+  assert.match(program, /required_goal_dir = D4_DirectionBetween\(goal, destination_exit\)/);
+  assert.match(program, /node\.steps == 0 && required_start_dir >= 0 && dir != required_start_dir/);
+  assert.match(program, /next\.x == goal\.x && next\.y == goal\.y[\s\S]*required_goal_dir >= 0 && dir != required_goal_dir/);
   assert.match(program, /function D4_PointInStationRect\(point, station\)/);
   assert.match(program, /D4_PointInStationRect\(rail\.prev_point, station\)/);
   assert.match(program, /D4_PointInStationRect\(rail\.next_point, station\)/);

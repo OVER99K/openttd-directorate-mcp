@@ -22,7 +22,10 @@ function D4_CompileBuildProgram(plan) {
 	local source_entry = single_shuttle ? source_station.op.point : D4_NearestBlueprintPortPoint(plan.station_blueprint, "platform_body", start);
 	local destination_exit = single_shuttle ? destination_station.op.point : D4_NearestBlueprintPortPoint(plan.destination_blueprint, "platform_body", goal);
 	if (source_entry == null || destination_exit == null) return { ok = false, error = D4_Error("program_missing_station_entries", "") };
-	local route = D4_BuildLegalCenterline(start, goal, plan.company_id, plan.policy);
+	local required_start_dir = D4_DirectionBetween(source_entry, start);
+	local required_goal_dir = D4_DirectionBetween(goal, destination_exit);
+	if (required_start_dir < 0 || required_goal_dir < 0) return { ok = false, error = D4_Error("program_invalid_station_heading", "") };
+	local route = D4_BuildLegalCenterline(start, goal, plan.company_id, plan.policy, required_start_dir, required_goal_dir);
 	if (!route.ok) return route;
 	local paired = { ok = true, return_lane = [] };
 	local destination_return_entry = null;
@@ -203,14 +206,14 @@ function D4_StationRectOperation(op_id, blueprint, destination_station) {
 	return { ok = true, op = { op_id = op_id, kind = "station_rect", tile = D4_ToTile(origin), point = origin, end_tile = D4_ToTile(endp), end_point = endp, direction = direction, num_platforms = num_platforms, platform_length = platform_length, destination_station = destination_station } };
 }
 
-function D4_BuildLegalCenterline(start, goal, company_id, policy) {
+function D4_BuildLegalCenterline(start, goal, company_id, policy, required_start_dir = -1, required_goal_dir = -1) {
 	/* Bounded clean-room A* adapted from the accepted M2 planner. Every
 	 * candidate primitive is tested by OpenTTD; no client-supplied path is
 	 * accepted and no map mutation occurs. */
 	local max_len = D4_ClampInt(D4_Has(policy, "path_limit") ? policy.path_limit : 160, 160, 8, 384);
 	local expansion_limit = D4_ClampInt(D4_Has(policy, "route_expansion_limit") ? policy.route_expansion_limit : 768, 768, 32, 2048);
 	local frontier_limit = D4_ClampInt(D4_Has(policy, "route_frontier_limit") ? policy.route_frontier_limit : 4096, 4096, 128, 8192);
-	local initial_dir = abs(goal.x - start.x) >= abs(goal.y - start.y) ? (goal.x >= start.x ? DIR_NE : DIR_SW) : (goal.y >= start.y ? DIR_SE : DIR_NW);
+	local initial_dir = required_start_dir >= 0 ? required_start_dir : (abs(goal.x - start.x) >= abs(goal.y - start.y) ? (goal.x >= start.x ? DIR_NE : DIR_SW) : (goal.y >= start.y ? DIR_SE : DIR_NW));
 	local initial_h = (abs(goal.x - start.x) + abs(goal.y - start.y)) * 10;
 	local seed = { point = start, dir = initial_dir, g = 0, cost = initial_h, index = 0, parent_index = -1, steps = 0, turns = 0 };
 	local frontier = [seed];
@@ -231,6 +234,7 @@ function D4_BuildLegalCenterline(start, goal, company_id, policy) {
 		if (node.steps >= max_len) continue;
 		local dirs = D4_ProgramDirections(node.dir, node.point, goal);
 		foreach (dir in dirs) {
+			if (node.steps == 0 && required_start_dir >= 0 && dir != required_start_dir) continue;
 			if (dir == D4_RotateDir(node.dir, 2)) continue;
 			local next = D4_Offset(node.point, dir, 1);
 			if (!D4_IsPointOnMap(next) || !GSMap.IsValidTile(D4_ToTile(next))) { rejected_bounds++; continue; }
@@ -240,6 +244,7 @@ function D4_BuildLegalCenterline(start, goal, company_id, policy) {
 			if (!D4_IsPointOnMap(prev) || !D4_IsLegalPrimitive(prev, node.point, next)) { rejected_primitive++; continue; }
 			if (!D4_TestProgramRailPiece(prev, node.point, next, company_id)) { rejected_rail++; continue; }
 			if (next.x == goal.x && next.y == goal.y) {
+				if (required_goal_dir >= 0 && dir != required_goal_dir) { rejected_endpoint++; continue; }
 				local continuation = D4_Offset(next, dir, 1);
 				if (!D4_IsPointOnMap(continuation) || !D4_TestProgramRailPiece(node.point, next, continuation, company_id)) { rejected_endpoint++; continue; }
 			}
