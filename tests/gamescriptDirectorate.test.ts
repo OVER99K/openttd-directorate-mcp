@@ -159,6 +159,9 @@ test("Depot access joins the depot mouth to the route instead of duplicating str
 	assert.doesNotMatch(program, /access\s*=\s*\[a,\s*front\]/);
 	assert.match(program, /foreach \(return_point in paired\.return_lane\) occupied\[D4_PointKey\(return_point\)\] <- true/);
 	assert.match(program, /if \(occupied != null && D4_PointKey\(depot_point\) in occupied\) continue/);
+	assert.match(program, /D4_DirectionBetween\(prev2, a\) != dir/);
+	assert.match(program, /D4_DirectionBetween\(front, next\) != dir/);
+	assert.doesNotMatch(program, /local a = path\[1\]/);
 });
 
 test("Rollback ignores diagnostic journal records before validating rollback assets", () => {

@@ -368,20 +368,27 @@ function D4_AppendLaneOperations(ops, prefix, path, entry_point, exit_point) {
 }
 
 function D4_DepotOperation(path, occupied = null) {
-	if (!D4_IsArray(path) || path.len() < 4) return { ok = false };
-	local a = path[1];
-	local b = path[2];
-	local dir = D4_DirectionBetween(a, b);
-	if (dir < 0) return { ok = false };
-	local front = b;
-	local sides = [D4_RightDir(dir), D4_RotateDir(D4_RightDir(dir), 2)];
-	foreach (side in sides) {
-		local depot_point = D4_Offset(front, side, 1);
-		if (!D4_IsPointOnMap(depot_point)) continue;
-		if (occupied != null && D4_PointKey(depot_point) in occupied) continue;
-		if (!D4_IsLegalPrimitive(a, front, depot_point)) continue;
-		local access_op = { op_id = "rail.depot_access.0", kind = "rail_connection", tile = D4_ToTile(front), point = front, prev = D4_ToTile(a), prev_point = a, next = D4_ToTile(depot_point), next_point = depot_point };
-		return { ok = true, access_op = access_op, op = { op_id = "depot.0", kind = "depot", tile = D4_ToTile(depot_point), point = depot_point, front = D4_ToTile(front), front_point = front } };
+	if (!D4_IsArray(path) || path.len() < 8) return { ok = false };
+	/* Put the siding on a proven straight run with clearance on both sides of
+	 * the junction. The old fixed path[2] placement could sit immediately after
+	 * a centerline turn; trains then oscillated between depot and mouth despite
+	 * successful static rail readback. */
+	for (local i = 4; i + 2 < path.len(); i++) {
+		local prev2 = path[i - 2];
+		local a = path[i - 1];
+		local front = path[i];
+		local next = path[i + 1];
+		local dir = D4_DirectionBetween(a, front);
+		if (dir < 0 || D4_DirectionBetween(prev2, a) != dir || D4_DirectionBetween(front, next) != dir) continue;
+		local sides = [D4_RightDir(dir), D4_RotateDir(D4_RightDir(dir), 2)];
+		foreach (side in sides) {
+			local depot_point = D4_Offset(front, side, 1);
+			if (!D4_IsPointOnMap(depot_point)) continue;
+			if (occupied != null && D4_PointKey(depot_point) in occupied) continue;
+			if (!D4_IsLegalPrimitive(a, front, depot_point)) continue;
+			local access_op = { op_id = "rail.depot_access.0", kind = "rail_connection", tile = D4_ToTile(front), point = front, prev = D4_ToTile(a), prev_point = a, next = D4_ToTile(depot_point), next_point = depot_point };
+			return { ok = true, access_op = access_op, op = { op_id = "depot.0", kind = "depot", tile = D4_ToTile(depot_point), point = depot_point, front = D4_ToTile(front), front_point = front } };
+		}
 	}
 	return { ok = false };
 }
