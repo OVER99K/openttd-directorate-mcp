@@ -25,17 +25,29 @@ function D4_CompileBuildProgram(plan) {
 	local route = D4_BuildLegalCenterline(start, goal, plan.company_id, plan.policy);
 	if (!route.ok) return route;
 	local paired = { ok = true, return_lane = [] };
+	local destination_return_entry = null;
+	local source_return_exit = null;
 	if (!single_shuttle) {
-		paired = D4_DeriveProgramLanes(route.path);
-		if (!paired.ok) return paired;
+		/* The selected outbound platform can put the adjacent station platform on
+		 * either side after rotation. Try both bounded offsets and retain the one
+		 * whose reversed lane has legal endpoints at both station footprints. */
+		foreach (side_turns in [1, 3]) {
+			local candidate = D4_DeriveProgramLanes(route.path, side_turns);
+			if (!candidate.ok) continue;
+			local candidate_destination_entry = D4_SelectLanePlatformEndpoint(plan.destination_blueprint, candidate.return_lane[0], candidate.return_lane[1], true);
+			local candidate_source_exit = D4_SelectLanePlatformEndpoint(plan.station_blueprint, candidate.return_lane[candidate.return_lane.len() - 1], candidate.return_lane[candidate.return_lane.len() - 2], false);
+			if (candidate_destination_entry == null || candidate_source_exit == null) continue;
+			paired = candidate;
+			destination_return_entry = candidate_destination_entry;
+			source_return_exit = candidate_source_exit;
+			break;
+		}
+		if (destination_return_entry == null || source_return_exit == null) return { ok = false, error = D4_Error("program_return_station_endpoint_missing", "") };
 	}
 	if (!D4_AppendLaneOperations(ops, "outbound", route.path, source_entry, destination_exit)) return { ok = false, error = D4_Error("program_invalid_outbound", "") };
 	if (!single_shuttle) {
 		/* D4_DeriveProgramLanes returns the second track in destination-to-source
 		 * order, so its station endpoints are deliberately reversed. */
-		local destination_return_entry = D4_SelectLanePlatformEndpoint(plan.destination_blueprint, paired.return_lane[0], paired.return_lane[1], true);
-		local source_return_exit = D4_SelectLanePlatformEndpoint(plan.station_blueprint, paired.return_lane[paired.return_lane.len() - 1], paired.return_lane[paired.return_lane.len() - 2], false);
-		if (destination_return_entry == null || source_return_exit == null) return { ok = false, error = D4_Error("program_return_station_endpoint_missing", "") };
 		if (!D4_AppendLaneOperations(ops, "return", paired.return_lane, destination_return_entry, source_return_exit)) return { ok = false, error = D4_Error("program_invalid_return", "") };
 	}
 
@@ -300,7 +312,7 @@ function D4_ProgramLaneAppend(lane, point) {
 	lane.append(point);
 }
 
-function D4_DeriveProgramLanes(path) {
+function D4_DeriveProgramLanes(path, side_turns = 1) {
 	/* Adapted from accepted M2's mitered corridor construction.  A simple
 	 * perpendicular offset breaks at corners; the miter inserts the turn cells
 	 * needed for a real adjacent rail path. */
@@ -310,13 +322,15 @@ function D4_DeriveProgramLanes(path) {
 		local incoming = i == 0 ? D4_DirectionBetween(path[0], path[1]) : D4_DirectionBetween(path[i - 1], path[i]);
 		local outgoing = i + 1 == path.len() ? incoming : D4_DirectionBetween(path[i], path[i + 1]);
 		if (incoming < 0 || outgoing < 0 || outgoing == D4_RotateDir(incoming, 2)) return { ok = false, error = D4_Error("invalid_centerline_turn", i.tostring()) };
+		local side_in = D4_RotateDir(incoming, side_turns);
+		local side_out = D4_RotateDir(outgoing, side_turns);
 		if (incoming == outgoing) {
-			D4_ProgramLaneAppend(lane, D4_Offset(path[i], D4_RightDir(incoming), 1));
+			D4_ProgramLaneAppend(lane, D4_Offset(path[i], side_in, 1));
 		} else {
-			local inside = outgoing == D4_RightDir(incoming);
-			if (!inside) D4_ProgramLaneAppend(lane, D4_Offset(path[i], D4_RightDir(incoming), 1));
-			D4_ProgramLaneAppend(lane, D4_Offset(D4_Offset(path[i], D4_RightDir(incoming), 1), D4_RightDir(outgoing), 1));
-			if (!inside) D4_ProgramLaneAppend(lane, D4_Offset(path[i], D4_RightDir(outgoing), 1));
+			local inside = outgoing == side_in;
+			if (!inside) D4_ProgramLaneAppend(lane, D4_Offset(path[i], side_in, 1));
+			D4_ProgramLaneAppend(lane, D4_Offset(D4_Offset(path[i], side_in, 1), side_out, 1));
+			if (!inside) D4_ProgramLaneAppend(lane, D4_Offset(path[i], side_out, 1));
 		}
 	}
 	local seen = {};
