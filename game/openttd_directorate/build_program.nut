@@ -368,7 +368,7 @@ function D4_ValidateBuildProgram(ops) {
 	return { ok = true };
 }
 
-function D4_PreflightBuildProgram(program, company_id, reserve) {
+function D4_PreflightBuildProgram(program, company_id, reserve, enforce_funds = true) {
 	local cost = 0;
 	local mode = GSCompanyMode(company_id);
 	if (!GSCompanyMode.IsValid()) return { ok = false, error = D4_Error("invalid_company", company_id.tostring()) };
@@ -378,9 +378,9 @@ function D4_PreflightBuildProgram(program, company_id, reserve) {
 		local result = D4_ExecuteProgramOperation(op, company_id, true);
 		if (!result.ok) return { ok = false, error = D4_Error("preflight_failed", op.op_id), failed_op = op.op_id, failure = result.failure, cost = cost, mutation = false };
 		cost += result.cost;
-		if (!D4_CanAfford(company_id, reserve, cost)) return { ok = false, error = D4_Error("insufficient_funds", op.op_id), failed_op = op.op_id, cost = cost, reserve = reserve, mutation = false };
+		if (enforce_funds && !D4_CanAfford(company_id, reserve, cost)) return { ok = false, error = D4_Error("insufficient_funds", op.op_id), failed_op = op.op_id, cost = cost, reserve = reserve, mutation = false };
 	}
-	return { ok = true, cost = cost, reserve = reserve, mutation = false };
+	return { ok = true, cost = cost, reserve = reserve, affordable = D4_CanAfford(company_id, reserve, cost), mutation = false };
 }
 
 function D4_ExecuteProgramOperation(op, company_id, test_only) {

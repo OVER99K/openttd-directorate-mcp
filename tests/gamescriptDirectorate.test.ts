@@ -48,15 +48,24 @@ test("Route registry is persistent, bounded, and reports health/economics", () =
 
 test("Commissioning workflow exercises topology, orders, vehicle, and verify levels", () => {
   const registry = readFileSync(join(gameDir, "route_registry.nut"), "utf8");
+  const journal = readFileSync(join(gameDir, "operation_journal.nut"), "utf8");
+  const util = readFileSync(join(gameDir, "util.nut"), "utf8");
+  const program = readFileSync(join(gameDir, "build_program.nut"), "utf8");
   assert.match(registry, /function D4_CommissionRoute\(/);
   assert.match(registry, /function D4_VerifyRouteTopology\(/);
   assert.match(registry, /function D4_AreStationsConnectedByRail\(/);
   assert.match(registry, /guard\s*<\s*2048/);
   assert.match(registry, /function D4_ConfigureRouteOrders\(/);
   assert.match(registry, /function D4_BuildRouteVehicle\(/);
-  assert.match(registry, /function D4_EnsureCommissionFunds\(/);
-  assert.match(registry, /GSCompany\.SetLoanAmount\(target\)/);
-  assert.match(registry, /target > maximum_loan/);
+  assert.match(registry, /D4_EnsureCompanyFunds\(company_id, estimated_vehicle_cost\)/);
+  assert.match(program, /enforce_funds = true/);
+  assert.match(journal, /D4_PreflightBuildProgram\(plan\.build_program, company_id, reserve, false\)/);
+  assert.match(journal, /D4_EnsureCompanyFunds\(company_id, reserve \+ quote\.cost\)/);
+  assert.match(journal, /D4_CanAfford\(company_id, reserve, 0\)/);
+  assert.match(util, /function D4_EnsureCompanyFunds\(/);
+  assert.match(util, /GSCompanyMode\(company_id\)/);
+  assert.match(util, /target > maximum_loan/);
+  assert.match(util, /GSCompany\.SetLoanAmount\(target\)/);
   assert.match(registry, /function D4_UpdateRouteHealth\(/);
   assert.match(registry, /function D4_VerifyRoute\(/);
   assert.match(registry, /level == "topology"/);
@@ -82,6 +91,7 @@ test("Journal load defers every recoverable partial mutation without dropping ro
   assert.match(journal, /if \(remaining\.len\(\) == 0\) op\.entries = \[\]/);
   assert.match(journal, /D4_IsSafeJournalEntry\(entry, op\.company_id, map_area\)/);
   assert.match(store, /this\.journal\.HydrateOne\(\)/);
+  assert.match(store, /D4_EnsureCompanyFunds\(company_id, 10000\)/);
   assert.match(main, /while \(this\.store\.HasDeferredOperations\(\)\)/);
   assert.ok(main.indexOf("this.store.Tick();", main.indexOf("while (true)")) < main.indexOf("this.bridge.Poll();", main.indexOf("while (true)")));
 });

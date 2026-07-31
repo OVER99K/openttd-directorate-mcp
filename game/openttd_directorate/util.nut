@@ -210,3 +210,19 @@ function D4_SelectRailType() {
 	}
 	return false;
 }
+
+function D4_EnsureCompanyFunds(company_id, required) {
+	local mode = GSCompanyMode(company_id);
+	if (!GSCompanyMode.IsValid()) return false;
+	if (GSCompany.GetBankBalance(company_id) >= required) return true;
+	local current_loan = GSCompany.GetLoanAmount();
+	local maximum_loan = GSCompany.GetMaxLoanAmount();
+	local interval = GSCompany.GetLoanInterval();
+	if (current_loan < 0 || maximum_loan < current_loan || interval <= 0) return false;
+	local deficit = required - GSCompany.GetBankBalance(company_id);
+	local increments = (deficit + interval - 1) / interval;
+	local target = current_loan + increments * interval;
+	if (target > maximum_loan) target = maximum_loan;
+	if (target <= current_loan || !GSCompany.SetLoanAmount(target)) return false;
+	return GSCompany.GetBankBalance(company_id) >= required;
+}

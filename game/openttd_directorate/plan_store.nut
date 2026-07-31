@@ -112,6 +112,9 @@ class DirectorateM4PlanStore {
 			this.plans[id] <- plan;
 			this.order.append(id);
 		}
+		/* Station surveys use GSTestMode but still obey the company's cash gate.
+		 * Keep a small, minimum-increment planning float for autonomous companies. */
+		if (!D4_EnsureCompanyFunds(company_id, 10000)) return { ok = false, error = D4_Error("insufficient_planning_finance", "10000") };
 		local result = this.AdvancePlan(plan);
 		this.Retention();
 		if (!result.ok) return result;

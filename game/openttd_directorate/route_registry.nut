@@ -365,7 +365,7 @@ function D4_BuildRouteVehicle(route, company_id, plan_store) {
 		estimated_vehicle_cost += GSEngine.GetPrice(quote_wagon);
 		break;
 	}
-	if (!D4_EnsureCommissionFunds(company_id, estimated_vehicle_cost)) return { ok = false, error = D4_Error("insufficient_commission_funds", estimated_vehicle_cost.tostring()) };
+	if (!D4_EnsureCompanyFunds(company_id, estimated_vehicle_cost)) return { ok = false, error = D4_Error("insufficient_commission_funds", estimated_vehicle_cost.tostring()) };
 	local vehicle_id = GSVehicle.BuildVehicle(orders.depot_tile, engine_id);
 	if (!GSVehicle.IsValidVehicle(vehicle_id)) return { ok = false, error = D4_Error("vehicle_build_failed", engine_id.tostring()) };
 	local build_cost = GSEngine.GetPrice(engine_id);
@@ -412,20 +412,6 @@ function D4_BuildRouteVehicle(route, company_id, plan_store) {
 		return { ok = false, error = D4_Error("append_depot_order_failed", vehicle_id.tostring()) };
 	}
 	return { ok = true, vehicle_id = vehicle_id, build_cost = build_cost };
-}
-
-function D4_EnsureCommissionFunds(company_id, required) {
-	if (GSCompany.GetBankBalance(company_id) >= required) return true;
-	local current_loan = GSCompany.GetLoanAmount();
-	local maximum_loan = GSCompany.GetMaxLoanAmount();
-	local interval = GSCompany.GetLoanInterval();
-	if (interval <= 0 || current_loan >= maximum_loan) return false;
-	local deficit = required - GSCompany.GetBankBalance(company_id);
-	local increase = ((deficit + interval - 1) / interval) * interval;
-	local target = current_loan + increase;
-	if (target > maximum_loan) target = maximum_loan;
-	if (target <= current_loan || !GSCompany.SetLoanAmount(target)) return false;
-	return GSCompany.GetBankBalance(company_id) >= required;
 }
 
 function D4_UpdateRouteHealth(route) {

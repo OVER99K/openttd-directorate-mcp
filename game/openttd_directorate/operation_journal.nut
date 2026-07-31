@@ -337,7 +337,7 @@ function D4_PreflightOperation(plan, store, journal, company_id, reserve, op) {
 		journal.MarkFailedPartial(op, empty);
 		return empty;
 	}
-	local pf = D4_PreflightBuildProgram(plan.build_program, company_id, reserve);
+	local pf = D4_PreflightBuildProgram(plan.build_program, company_id, reserve, false);
 	if (!pf.ok) {
 		journal.Record(op, "preflight_failure", 0, pf);
 		local failed = { ok = false, error = pf.error, operation_id = op.operation_id, state = "failed_partial", failed_op = D4_Has(pf, "failed_op") ? pf.failed_op : "", failure = D4_Has(pf, "failure") ? pf.failure : pf, cost = D4_Has(pf, "cost") ? pf.cost : 0, reserve = reserve, mutation = false };
@@ -350,6 +350,7 @@ function D4_PreflightOperation(plan, store, journal, company_id, reserve, op) {
 		state = "preflighted",
 		cost = pf.cost,
 		reserve = reserve,
+		affordable = pf.affordable,
 		mutation = false,
 	};
 	journal.MarkState(op, "preflighted", done);
@@ -371,6 +372,18 @@ function D4_CommitOperation(plan, store, journal, company_id, reserve, op) {
 		journal.MarkFailedPartial(op, empty);
 		return empty;
 	}
+	local quote = D4_PreflightBuildProgram(plan.build_program, company_id, reserve, false);
+	if (!quote.ok) {
+		journal.Record(op, "preflight_failure", 0, quote);
+		local invalid = { ok = false, error = quote.error, operation_id = op.operation_id, state = "failed_partial", failure = quote, remaining = [] };
+		journal.MarkFailedPartial(op, invalid);
+		return invalid;
+	}
+	if (!D4_EnsureCompanyFunds(company_id, reserve + quote.cost)) {
+		local finance = { ok = false, error = D4_Error("insufficient_finance_capacity", quote.cost.tostring()), operation_id = op.operation_id, state = "failed_partial", remaining = [] };
+		journal.MarkFailedPartial(op, finance);
+		return finance;
+	}
 	local pf_program = D4_PreflightBuildProgram(plan.build_program, company_id, reserve);
 	if (!pf_program.ok) {
 		journal.Record(op, "preflight_failure", 0, pf_program);
@@ -380,7 +393,7 @@ function D4_CommitOperation(plan, store, journal, company_id, reserve, op) {
 	}
 	op.state = "in_progress";
 	foreach (program_op in plan.build_program.ops) {
-		if (!D4_CanAfford(company_id, reserve, total_cost)) {
+		if (!D4_CanAfford(company_id, reserve, 0)) {
 			journal.Record(op, "finance_failure", program_op.tile, { cost = total_cost, reserve = reserve });
 			local rollback_result = D4_RollbackOperation(journal, op);
 			local failed = { ok = false, error = D4_Error("insufficient_funds", program_op.op_id), operation_id = op.operation_id, state = op.state, failed_op = program_op.op_id, rollback = rollback_result, remaining = rollback_result.remaining };
