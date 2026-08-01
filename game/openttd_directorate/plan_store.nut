@@ -4,51 +4,66 @@ class DirectorateM4PlanStore {
 	next_id = 0;
 	journal = null;
 	registry = null;
+	deferred_plans = null;
+	deferred_plan_order = null;
 
 	constructor() {
 		this.plans = {};
 		this.order = [];
 		this.journal = DirectorateM4OperationJournal();
 		this.registry = DirectorateM4RouteRegistry();
+		this.deferred_plans = {};
+		this.deferred_plan_order = [];
 	}
 
 	function Save() {
-		return { plans = this.plans, order = this.order, next_id = this.next_id, journal = this.journal.Save(), registry = this.registry.Save() };
+		local saved_plans = this.plans;
+		local saved_order = this.order;
+		if (this.deferred_plan_order.len() > 0) {
+			saved_plans = {};
+			saved_order = [];
+			foreach (id in this.deferred_plan_order) { if (id in this.deferred_plans) { saved_plans[id] <- this.deferred_plans[id]; saved_order.append(id); } }
+			foreach (id in this.order) { if (id in this.plans) { saved_plans[id] <- this.plans[id]; saved_order.append(id); } }
+		}
+		return { plans = saved_plans, order = saved_order, next_id = this.next_id, journal = this.journal.Save(), registry = this.registry.Save() };
 	}
 
-	function Load(data) {
+	function Load(data) { this.BeginLoad(data); }
+
+	function BeginLoad(data) {
+		this.plans = {};
+		this.order = [];
+		this.deferred_plans = {};
+		this.deferred_plan_order = [];
 		this.journal = DirectorateM4OperationJournal();
 		this.registry = DirectorateM4RouteRegistry();
 		if (!D4_IsTable(data) || !("plans" in data) || !D4_IsTable(data.plans) || !("order" in data) || !D4_IsArray(data.order) || data.order.len() > DIRECTORATE_M4_MAX_PLANS) {
 			GSLog.Warning("D4 M4 plan-store load rejected shape");
-			this.plans = {};
-			this.order = [];
 			return;
 		}
-		local loaded = {};
-		local loaded_order = [];
-		for (local i = 0; i < data.order.len(); i++) {
-			local id = data.order[i];
-			if (typeof id != "string" || id.len() < 1 || id.len() > 128 || id in loaded || !(id in data.plans)) continue;
-			local plan = data.plans[id];
-			/* Keep Load() bounded: validate the persisted envelope and program shape
-			 * here, then perform operation-by-operation program validation only when
-			 * that specific plan is accessed. */
-			if (!this.IsPlanSafe(plan, true, false) || plan.plan_id != id) { GSLog.Warning("D4 M4 plan-store load rejected plan " + id); continue; }
-			if (D4_UpgradeBuildProgram(plan)) {
-				plan.revision++;
-				plan.updated_tick = D4_Tick();
-				GSLog.Info("D4 M4 upgraded build program " + id + " to v" + DIRECTORATE_M4_BUILD_PROGRAM_VERSION);
-			}
-			if (D4_Has(plan, "build_program") && D4_IsTable(plan.build_program) && D4_Has(plan.build_program, "ok") && plan.build_program.ok && (!D4_Has(plan.build_program, "version") || !D4_IsAcceptedBuildProgramVersion(plan.build_program.version, false))) { GSLog.Warning("D4 M4 plan-store load rejected unmigrated plan " + id); continue; }
-			loaded[id] <- plan;
-			loaded_order.append(id);
-		}
-		this.plans = loaded;
-		this.order = loaded_order;
+		this.deferred_plans = data.plans;
+		this.deferred_plan_order = data.order;
 		if ("next_id" in data && typeof data.next_id == "integer") this.next_id = D4_ClampInt(data.next_id, 0, 0, 1000000000);
 		if ("journal" in data) this.journal.Load(data.journal);
-		if ("registry" in data) this.registry.Load(data.registry);
+		if ("registry" in data) this.registry.BeginLoad(data.registry);
+	}
+
+	function HydrateOnePlan() {
+		if (this.deferred_plan_order.len() == 0) return;
+		local id = this.deferred_plan_order.pop();
+		if (!(id in this.deferred_plans)) return;
+		local plan = this.deferred_plans[id];
+		delete this.deferred_plans[id];
+		if (typeof id != "string" || id.len() < 1 || id.len() > 128 || id in this.plans) return;
+		if (!this.IsPlanSafe(plan, true, false) || plan.plan_id != id) { GSLog.Warning("D4 M4 plan-store load rejected plan " + id); return; }
+		if (D4_UpgradeBuildProgram(plan)) {
+			plan.revision++;
+			plan.updated_tick = D4_Tick();
+			GSLog.Info("D4 M4 upgraded build program " + id + " to v" + DIRECTORATE_M4_BUILD_PROGRAM_VERSION);
+		}
+		if (D4_Has(plan, "build_program") && D4_IsTable(plan.build_program) && D4_Has(plan.build_program, "ok") && plan.build_program.ok && (!D4_Has(plan.build_program, "version") || !D4_IsAcceptedBuildProgramVersion(plan.build_program.version, false))) { GSLog.Warning("D4 M4 plan-store load rejected unmigrated plan " + id); return; }
+		this.plans[id] <- plan;
+		this.order.insert(0, id);
 	}
 
 	function GetPlan(plan_id) {
@@ -61,12 +76,14 @@ class DirectorateM4PlanStore {
 	}
 
 	function Tick() {
+		if (this.deferred_plan_order.len() > 0) { this.HydrateOnePlan(); return; }
+		if (this.registry.HasDeferred()) { this.registry.HydrateOne(); return; }
 		this.journal.HydrateOne();
 		this.Retention();
 	}
 
 	function HasDeferredOperations() {
-		return this.journal.HasDeferred();
+		return this.deferred_plan_order.len() > 0 || this.registry.HasDeferred() || this.journal.HasDeferred();
 	}
 
 	function CreateOrAdvance(company_id, intent, policy, requested_id, revision) {

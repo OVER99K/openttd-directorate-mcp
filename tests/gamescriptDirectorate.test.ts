@@ -86,6 +86,7 @@ test("Commissioning workflow exercises topology, orders, vehicle, and verify lev
 test("Journal load defers every recoverable partial mutation without dropping rollback state", () => {
   const journal = readFileSync(join(gameDir, "operation_journal.nut"), "utf8");
   const store = readFileSync(join(gameDir, "plan_store.nut"), "utf8");
+  const registry = readFileSync(join(gameDir, "route_registry.nut"), "utf8");
   const main = readFileSync(join(gameDir, "main.nut"), "utf8");
   assert.match(journal, /deferred_operations/);
   assert.match(journal, /function HydrateOne\(\)/);
@@ -97,7 +98,15 @@ test("Journal load defers every recoverable partial mutation without dropping ro
   assert.match(journal, /if \(remaining\.len\(\) == 0\) op\.entries = \[\]/);
   assert.match(journal, /D4_IsSafeJournalEntry\(entry, op\.company_id, map_area\)/);
   assert.match(store, /this\.journal\.HydrateOne\(\)/);
+  assert.match(store, /function BeginLoad\(data\)/);
+  assert.match(store, /deferred_plans/);
+  assert.match(store, /this\.registry\.HydrateOne\(\)/);
+  assert.match(registry, /deferred_routes/);
+  assert.match(registry, /function HydrateOne\(\)/);
   assert.match(store, /D4_EnsureCompanyFunds\(company_id, 10000\)/);
+  assert.match(main, /pending_load/);
+  assert.match(main, /this\.store\.BeginLoad\(this\.pending_load\)/);
+  assert.doesNotMatch(main, /OpenTTDDirectorate::Load[\s\S]*this\.store\.Load\(data\.plans\)/);
   assert.match(main, /while \(this\.store\.HasDeferredOperations\(\)\)/);
   assert.ok(main.indexOf("this.store.Tick();", main.indexOf("while (true)")) < main.indexOf("this.bridge.Poll();", main.indexOf("while (true)")));
 });
@@ -135,7 +144,7 @@ test("Plan store owns the route registry and exposes observe/verify routes", () 
   const store = readFileSync(join(gameDir, "plan_store.nut"), "utf8");
   assert.match(store, /registry = DirectorateM4RouteRegistry\(\)/);
   assert.match(store, /registry = this\.registry\.Save\(\)/);
-  assert.match(store, /this\.registry\.Load\(data\.registry\)/);
+  assert.match(store, /this\.registry\.BeginLoad\(data\.registry\)/);
   assert.match(store, /scope == "routes"/);
   assert.match(store, /this\.registry\.Observe\(request\)/);
   assert.match(store, /D4_VerifyRoute\(this\.registry,/);
@@ -276,12 +285,13 @@ test("Paired corridor connects through-hub endpoints through common fan and merg
   assert.match(program, /through_hub_source_exit_heading_mismatch/);
   assert.match(program, /through_hub_destination_exit_heading_mismatch/);
   assert.match(program, /source_manifest\.manifest\.loop_exit_heading/);
-  assert.match(program, /dest_manifest\.manifest\.fan_entry_heading, 4, 50, 3\)/);
+  assert.match(program, /dest_manifest\.manifest\.fan_entry_heading, 4, 50, 3, true\)/);
   assert.match(program, /at least three tiles/);
+  assert.match(program, /function D4_HasBuildablePairedLane/);
   assert.match(program, /function D4_BuildTwoTurnCenterline/);
-  assert.match(program, /D4_BuildTwoTurnCenterline\(start, goal, company_id, required_start_dir, min_turn_run\)/);
+  assert.match(program, /D4_BuildTwoTurnCenterline\(start, goal, company_id, required_start_dir, min_turn_run, require_paired_lane\)/);
   assert.match(program, /local approach = D4_Offset\(goal, D4_RotateDir\(required_goal_dir, 2\), min_turn_run\)/);
-  assert.match(program, /local prefix = D4_BuildLegalCenterline\(start, approach, company_id, policy, required_start_dir, required_goal_dir, max_turns, turn_cost_override, 0\)/);
+  assert.match(program, /local prefix = D4_BuildLegalCenterline\(start, approach, company_id, policy, required_start_dir, required_goal_dir, max_turns, turn_cost_override, 0, false\)/);
   assert.match(program, /function D4_ValidateCenterlineCandidate/);
   assert.match(program, /turning && min_turn_run > 0 && node\.run < min_turn_run/);
   assert.match(program, /node\.point\.x == goal\.x && node\.point\.y == goal\.y && \(min_turn_run <= 0 \|\| node\.run >= min_turn_run\)/);
@@ -384,7 +394,8 @@ test("Main Save/Load keeps plan and registry envelope version", () => {
   assert.match(main, /DIRECTORATE_M4_SAVE_VERSION/);
   assert.match(main, /this\.store\.Save\(\)/);
   assert.match(main, /data\.version == DIRECTORATE_M4_SAVE_VERSION/);
-  assert.match(main, /this\.store\.Load\(data\.plans\)/);
+  assert.match(main, /this\.pending_load = data\.plans/);
+  assert.match(main, /this\.store\.BeginLoad\(this\.pending_load\)/);
 });
 
 test("TS contracts expose commission request and bounded verify schema", () => {

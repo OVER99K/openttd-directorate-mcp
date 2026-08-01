@@ -139,6 +139,10 @@ function writeConfig() {
 \t\t\t}
 \t\t\tlocal trunks = D4_VerifyThroughHubTrunks(topology);
 \t\t\tif (!trunks.ok) failures.append("trunks_failed");
+\t\t\tlocal reachability = D4_VerifyThroughHubRoroReachability(program.ops, topology);
+\t\t\tif (!reachability.ok) {
+\t\t\t\tforeach (rf in reachability.failures) failures.append("reach_" + (D4_Has(rf, "side") ? rf.side + "_" : "") + rf.reason);
+\t\t\t}
 \t\t\tlocal signals = 0;
 \t\t\tforeach (op in program.ops) if (op.kind == "signal") signals++;
 \t\t\tif (!D4_Has(topology, "signals") || topology.signals.len() != signals) failures.append("signal_manifest_mismatch");
@@ -269,13 +273,13 @@ server_name = "OpenTTD Directorate Real Engine Gate"
 max_companies = 4
 
 [game_creation]
-map_x = 6
-map_y = 6
+map_x = 7
+map_y = 7
 starting_year = 1950
 
 [difficulty]
 industry_density = 4
-number_towns = 3
+number_towns = 0
 terrain_type = 0
 quantity_sea_lakes = 0
 
@@ -330,7 +334,7 @@ function updateRuntimeHistory(history, probe) {
       if (vehicle.destination_egress_row >= 0) row.rearEgressRows.add(`destination:${vehicle.destination_egress_row}`);
       const previous = row.vehicles.get(vehicle.vehicle_id);
       const profit = (vehicle.profit_last_year ?? 0) + (vehicle.profit_this_year ?? 0);
-      if (previous && vehicle.destination_row >= 0 && profit > previous.profit && (previous.load > 0 || vehicle.load === 0)) row.deliveries += 1;
+      if (previous && profit > previous.profit && (previous.load > (vehicle.load ?? 0) || vehicle.load === 0)) row.deliveries += 1;
       row.vehicles.set(vehicle.vehicle_id, { load: vehicle.load ?? 0, profit });
       row.snapshots.push({
         tick,
@@ -490,8 +494,8 @@ async function main() {
           station_template: "through_hub_2x4",
           site_search_radius: 4,
           site_pair_skip: Number.parseInt(process.env.OPENTTD_GATE_SITE_PAIR_SKIP ?? "0", 10),
-          route_expansion_limit: 4096,
-          route_frontier_limit: 8192,
+          route_expansion_limit: 32768,
+          route_frontier_limit: 32768,
           route_turn_cost: 50,
           wagon_count: 1,
           signals: true,
@@ -662,18 +666,20 @@ async function main() {
       if (verifyEconomic.payload?.health?.positive_revenue !== false) throw new Error(`economic verify unexpectedly profitable before travel: ${JSON.stringify(verifyEconomic)}`);
       evidence.steps.push({ name: "verify_economic_before_travel", response: verifyEconomic });
 
-      evidence.steps.push({ name: "fastforward_on", response: await client.rcon("fastforward") });
       let profitable = false;
       const runtimeHistory = new Map();
       for (let attempt = 0; attempt < 24; attempt++) {
-        await delay(5000);
-        const runtimeProbeWire = await client.requestGameScript("execute", {
-          company_id: 0,
-          command: "through_hub_runtime_probe",
-          params: { route_ids: ["directorate-gate-route", "directorate-gate-route-second"] },
-        });
-        const runtimeProbe = assertOk("through_hub_runtime_probe", runtimeProbeWire.payload);
-        updateRuntimeHistory(runtimeHistory, runtimeProbe);
+        let runtimeProbeWire = null;
+        for (let sample = 0; sample < 10; sample++) {
+          await delay(500);
+          runtimeProbeWire = await client.requestGameScript("execute", {
+            company_id: 0,
+            command: "through_hub_runtime_probe",
+            params: { route_ids: ["directorate-gate-route", "directorate-gate-route-second"] },
+          });
+          const runtimeProbe = assertOk("through_hub_runtime_probe", runtimeProbeWire.payload);
+          updateRuntimeHistory(runtimeHistory, runtimeProbe);
+        }
         const poll = await request(handlers, "verify", { company_id: 0, route_id: "directorate-gate-route", level: "economic" });
         const secondPoll = await request(handlers, "verify", { company_id: 0, route_id: "directorate-gate-route-second", level: "economic" });
         if (typeof poll.payload?.health?.positive_revenue !== "boolean" || typeof secondPoll.payload?.health?.positive_revenue !== "boolean") throw new Error(`verify_economic_poll missing health: ${JSON.stringify({ poll, secondPoll })}`);
@@ -684,7 +690,6 @@ async function main() {
           break;
         }
       }
-      evidence.steps.push({ name: "fastforward_off", response: await client.rcon("fastforward") });
       if (!profitable) throw new Error(`both routes did not become profitable within poll window`);
       const runtimeSummary = runtimeHistorySummary(runtimeHistory);
       evidence.steps.push({ name: "through_hub_runtime_history", response: runtimeSummary });

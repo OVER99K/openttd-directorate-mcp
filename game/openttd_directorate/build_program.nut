@@ -146,7 +146,7 @@ function D4_CompileThroughHubRoroProgram(plan, source_station, destination_stati
 	 * inside miter folds back onto the centerline. Keep at least three tiles
 	 * between 45-degree transitions so paired trunks use deliberate sloped
 	 * curves rather than sharp S-bends. */
-	local outbound = D4_BuildLegalCenterline(source_out, dest_in, plan.company_id, plan.policy, source_manifest.manifest.loop_exit_heading, dest_manifest.manifest.fan_entry_heading, 4, 50, 3);
+	local outbound = D4_BuildLegalCenterline(source_out, dest_in, plan.company_id, plan.policy, source_manifest.manifest.loop_exit_heading, dest_manifest.manifest.fan_entry_heading, 4, 50, 3, true);
 	if (!outbound.ok) return outbound;
 	local returned = null;
 	local lane_diagnostics = "";
@@ -163,8 +163,9 @@ function D4_CompileThroughHubRoroProgram(plan, source_station, destination_stati
 		local end_heading = D4_DirectionBetween(candidate.return_lane[candidate.return_lane.len() - 2], candidate.return_lane[candidate.return_lane.len() - 1]);
 		local start_heading_ok = start_heading == dest_manifest.manifest.loop_exit_heading;
 		local end_heading_ok = end_heading == source_manifest.manifest.fan_entry_heading;
-		lane_diagnostics += "side=" + side_turns + ":" + D4_PointKey(candidate.return_lane[0]) + ">" + D4_PointKey(candidate.return_lane[candidate.return_lane.len() - 1]) + ":h=" + start_heading + ">" + end_heading + ";";
-		if (start_ok && end_ok && start_heading_ok && end_heading_ok) { returned = candidate; break; }
+		local rail_buildable = D4_ValidateCenterlineCandidate(candidate.return_lane, plan.company_id, dest_manifest.manifest.loop_exit_heading);
+		lane_diagnostics += "side=" + side_turns + ":" + D4_PointKey(candidate.return_lane[0]) + ">" + D4_PointKey(candidate.return_lane[candidate.return_lane.len() - 1]) + ":h=" + start_heading + ">" + end_heading + ":rail=" + rail_buildable + ";";
+		if (start_ok && end_ok && start_heading_ok && end_heading_ok && rail_buildable) { returned = candidate; break; }
 	}
 	if (returned == null) {
 		local path_diagnostics = D4_PathRunDiagnostics(outbound.path);
@@ -212,6 +213,14 @@ function D4_CompileThroughHubRoroProgram(plan, source_station, destination_stati
 		return_lane = returned.return_lane,
 		signals = D4_ProgramSignalManifest(ops),
 	};
+	/* Prove the emitted rail primitives collapse into a single-source fan and a
+	 * single-sink merge before the plan is ever committed. Any regression to
+	 * per-platform trunk identity fails here rather than in-game. */
+	local reachability = D4_VerifyThroughHubRoroReachability(ops, topology);
+	if (!reachability.ok) {
+		local reason = reachability.failures.len() > 0 && D4_Has(reachability.failures[0], "reason") ? reachability.failures[0].reason : "reachability_unknown";
+		return { ok = false, error = D4_Error("through_hub_reachability_broken", reason) };
+	}
 	return {
 		ok = true,
 		version = DIRECTORATE_M4_BUILD_PROGRAM_VERSION,
@@ -560,7 +569,17 @@ function D4_StationRectOperation(op_id, blueprint, destination_station) {
 	return { ok = true, op = { op_id = op_id, kind = "station_rect", tile = D4_ToTile(origin), point = origin, end_tile = D4_ToTile(endp), end_point = endp, direction = direction, num_platforms = num_platforms, platform_length = platform_length, destination_station = destination_station } };
 }
 
-function D4_BuildTwoTurnCenterline(start, goal, company_id, heading, min_run) {
+function D4_HasBuildablePairedLane(path, company_id) {
+	foreach (side_turns in [1, 3]) {
+		local candidate = D4_DeriveProgramLanes(path, side_turns);
+		if (!candidate.ok || candidate.return_lane.len() < 2) continue;
+		local heading = D4_DirectionBetween(candidate.return_lane[0], candidate.return_lane[1]);
+		if (heading >= 0 && D4_ValidateCenterlineCandidate(candidate.return_lane, company_id, heading)) return true;
+	}
+	return false;
+}
+
+function D4_BuildTwoTurnCenterline(start, goal, company_id, heading, min_run, require_paired_lane = false) {
 	local horizontal = heading == DIR_NE || heading == DIR_SW;
 	local forward_delta = horizontal ? goal.x - start.x : goal.y - start.y;
 	local forward_step = heading == DIR_NE || heading == DIR_SE ? 1 : -1;
@@ -574,7 +593,7 @@ function D4_BuildTwoTurnCenterline(start, goal, company_id, heading, min_run) {
 		if (!D4_AppendAxisTo(path, horizontal ? "x" : "y", bend_value)) continue;
 		if (!D4_AppendAxisTo(path, horizontal ? "y" : "x", horizontal ? goal.y : goal.x)) continue;
 		if (!D4_AppendAxisTo(path, horizontal ? "x" : "y", horizontal ? goal.x : goal.y)) continue;
-		if (D4_ValidateCenterlineCandidate(path, company_id, heading)) return { ok = true, path = path };
+		if (D4_ValidateCenterlineCandidate(path, company_id, heading) && (!require_paired_lane || D4_HasBuildablePairedLane(path, company_id))) return { ok = true, path = path };
 	}
 	return { ok = false, error = D4_Error("dogleg_not_found", D4_PointKey(start) + "->" + D4_PointKey(goal)) };
 }
@@ -605,40 +624,45 @@ function D4_ValidateCenterlineCandidate(path, company_id, required_heading) {
 	return true;
 }
 
-function D4_BuildLegalCenterline(start, goal, company_id, policy, required_start_dir = -1, required_goal_dir = -1, max_turns = -1, turn_cost_override = -1, min_turn_run = 0) {
+function D4_BuildLegalCenterline(start, goal, company_id, policy, required_start_dir = -1, required_goal_dir = -1, max_turns = -1, turn_cost_override = -1, min_turn_run = 0, require_paired_lane = false) {
 	/* Paired RoRo endpoints normally face the same cardinal direction. Test the
 	 * complete bounded family of two-turn doglegs first: unlike generic A*, this
 	 * guarantees enough straight approach at both ends for a parallel mitered
 	 * lane and costs only O(distance squared) test-mode rail probes. */
 	if (min_turn_run > 0 && required_start_dir >= 0 && required_start_dir == required_goal_dir) {
-		local dogleg = D4_BuildTwoTurnCenterline(start, goal, company_id, required_start_dir, min_turn_run);
+		local dogleg = D4_BuildTwoTurnCenterline(start, goal, company_id, required_start_dir, min_turn_run, require_paired_lane);
 		if (dogleg.ok) return dogleg;
 		/* Reserve the final straight before generic search. The unconstrained A*
 		 * previously reached the goal with a one-tile corrective miter; routing to
 		 * a shifted approach point makes the required terminal run structural. */
 		local approach = D4_Offset(goal, D4_RotateDir(required_goal_dir, 2), min_turn_run);
 		if (!D4_IsPointOnMap(approach)) return dogleg;
-		local prefix = D4_BuildLegalCenterline(start, approach, company_id, policy, required_start_dir, required_goal_dir, max_turns, turn_cost_override, 0);
+		local prefix = D4_BuildLegalCenterline(start, approach, company_id, policy, required_start_dir, required_goal_dir, max_turns, turn_cost_override, 0, false);
 		if (!prefix.ok) return prefix;
 		local combined = [];
 		foreach (point in prefix.path) D4_AppendPointIfNew(combined, point);
 		for (local tail = min_turn_run - 1; tail >= 0; tail--) D4_AppendPointIfNew(combined, D4_Offset(goal, D4_RotateDir(required_goal_dir, 2), tail));
 		if (!D4_ValidateCenterlineCandidate(combined, company_id, required_goal_dir)) return { ok = false, error = D4_Error("approach_extension_unbuildable", D4_PointKey(approach)) };
+		if (require_paired_lane && !D4_HasBuildablePairedLane(combined, company_id)) return { ok = false, error = D4_Error("paired_extension_unbuildable", D4_PointKey(approach)) };
 		return { ok = true, path = combined };
 	}
 	/* Bounded clean-room A* adapted from the accepted M2 planner. Every
 	 * candidate primitive is tested by OpenTTD; no client-supplied path is
 	 * accepted and no map mutation occurs. */
 	local max_len = D4_ClampInt(D4_Has(policy, "path_limit") ? policy.path_limit : 160, 160, 8, 384);
-	local expansion_limit = D4_ClampInt(D4_Has(policy, "route_expansion_limit") ? policy.route_expansion_limit : 768, 768, 32, 4096);
-	local frontier_limit = D4_ClampInt(D4_Has(policy, "route_frontier_limit") ? policy.route_frontier_limit : 4096, 4096, 128, 8192);
+	local expansion_limit = D4_ClampInt(D4_Has(policy, "route_expansion_limit") ? policy.route_expansion_limit : 768, 768, 32, 32768);
+	local frontier_limit = D4_ClampInt(D4_Has(policy, "route_frontier_limit") ? policy.route_frontier_limit : 4096, 4096, 128, 32768);
 	local initial_dir = required_start_dir >= 0 ? required_start_dir : (abs(goal.x - start.x) >= abs(goal.y - start.y) ? (goal.x >= start.x ? DIR_NE : DIR_SW) : (goal.y >= start.y ? DIR_SE : DIR_NW));
 	local initial_h = (abs(goal.x - start.x) + abs(goal.y - start.y)) * 10;
+	local track_run_state = min_turn_run > 0;
+	local track_turn_state = max_turns >= 0;
 	local seed = { point = start, dir = initial_dir, g = 0, cost = initial_h, index = 0, parent_index = -1, steps = 0, turns = 0, run = 0 };
 	local route_turn_cost = turn_cost_override >= 0 ? D4_ClampInt(turn_cost_override, 5, 0, 100) : D4_ClampInt(D4_Has(policy, "route_turn_cost") ? policy.route_turn_cost : 5, 5, 0, 100);
 	local frontier = [seed];
 	local nodes = [seed];
 	local visited = {};
+	local best_g = {};
+	best_g[D4_PointKey(start) + ":" + initial_dir + (track_run_state ? ":r0" : "") + (track_turn_state ? ":t0" : "")] <- 0;
 	local expansions = 0;
 	local rejected_bounds = 0;
 	local rejected_primitive = 0;
@@ -646,9 +670,8 @@ function D4_BuildLegalCenterline(start, goal, company_id, policy, required_start
 	local rejected_endpoint = 0;
 	while (frontier.len() > 0 && expansions < expansion_limit) {
 		local node = D4_ProgramPopBest(frontier);
-		local track_run_state = min_turn_run > 0;
 		local run_state = min_turn_run > 0 && node.run < min_turn_run ? node.run : min_turn_run;
-		local key = D4_PointKey(node.point) + ":" + node.dir + (track_run_state ? ":" + run_state : "");
+		local key = D4_PointKey(node.point) + ":" + node.dir + (track_run_state ? ":r" + run_state : "") + (track_turn_state ? ":t" + node.turns : "");
 		if (key in visited) continue;
 		visited[key] <- true;
 		expansions++;
@@ -666,7 +689,7 @@ function D4_BuildLegalCenterline(start, goal, company_id, policy, required_start
 			local child_turns = node.turns + (turning ? 1 : 0);
 			local child_run = turning ? 1 : node.run + 1;
 			local child_run_state = min_turn_run > 0 && child_run < min_turn_run ? child_run : min_turn_run;
-			local nkey = D4_PointKey(next) + ":" + dir + (track_run_state ? ":" + child_run_state : "");
+			local nkey = D4_PointKey(next) + ":" + dir + (track_run_state ? ":r" + child_run_state : "") + (track_turn_state ? ":t" + child_turns : "");
 			if (nkey in visited) continue;
 			local prev = node.parent_index >= 0 ? nodes[node.parent_index].point : D4_Offset(node.point, D4_RotateDir(dir, 2), 1);
 			if (!D4_IsPointOnMap(prev) || !D4_IsLegalPrimitive(prev, node.point, next)) { rejected_primitive++; continue; }
@@ -676,7 +699,6 @@ function D4_BuildLegalCenterline(start, goal, company_id, policy, required_start
 				local continuation = D4_Offset(next, dir, 1);
 				if (!D4_IsPointOnMap(continuation) || !D4_TestProgramRailPiece(node.point, next, continuation, company_id)) { rejected_endpoint++; continue; }
 			}
-			if (nodes.len() >= frontier_limit) continue;
 			local turn_cost = dir == node.dir ? 0 : route_turn_cost;
 			local heuristic = (abs(goal.x - next.x) + abs(goal.y - next.y)) * 10;
 			/* Keep the accumulated path cost separate from the heuristic. Adding the
@@ -684,9 +706,14 @@ function D4_BuildLegalCenterline(start, goal, company_id, policy, required_start
 			 * turning A* into a strongly greedy search that exhausts its bounded
 			 * frontier on otherwise trivial routes. */
 			local child_g = node.g + 10 + turn_cost;
+			/* Do not let multiple worse paths to the same directed/run state consume
+			 * the bounded node budget before the best candidate is popped. */
+			if (nkey in best_g && best_g[nkey] <= child_g) continue;
+			best_g[nkey] <- child_g;
+			if (nodes.len() >= frontier_limit) continue;
 			local child = { point = next, dir = dir, g = child_g, cost = child_g + heuristic, index = nodes.len(), parent_index = node.index, steps = node.steps + 1, turns = child_turns, run = child_run };
 			nodes.append(child);
-			frontier.append(child);
+			D4_ProgramPushBest(frontier, child);
 		}
 	}
 	return { ok = false, error = D4_Error("route_not_found", start.x + "," + start.y + "->" + goal.x + "," + goal.y + ":e=" + expansions + ":n=" + nodes.len() + ":b=" + rejected_bounds + ":p=" + rejected_primitive + ":r=" + rejected_rail + ":z=" + rejected_endpoint) };
@@ -716,14 +743,44 @@ function D4_ProgramDirections(current, point, goal) {
 	return dirs;
 }
 
-function D4_ProgramPopBest(frontier) {
-	local best = 0;
-	for (local i = 1; i < frontier.len(); i++) {
-		local a = frontier[i], b = frontier[best];
-		if (a.cost < b.cost || (a.cost == b.cost && (a.point.x < b.point.x || (a.point.x == b.point.x && (a.point.y < b.point.y || (a.point.y == b.point.y && a.dir < b.dir)))))) best = i;
+function D4_ProgramNodeBefore(a, b) {
+	return a.cost < b.cost || (a.cost == b.cost && (a.point.x < b.point.x || (a.point.x == b.point.x && (a.point.y < b.point.y || (a.point.y == b.point.y && a.dir < b.dir)))));
+}
+
+function D4_ProgramPushBest(frontier, node) {
+	frontier.append(node);
+	local index = frontier.len() - 1;
+	while (index > 0) {
+		local parent_index = (index - 1) / 2;
+		if (!D4_ProgramNodeBefore(frontier[index], frontier[parent_index])) break;
+		local swap = frontier[parent_index];
+		frontier[parent_index] = frontier[index];
+		frontier[index] = swap;
+		index = parent_index;
 	}
-	local value = frontier[best];
-	frontier.remove(best);
+}
+
+function D4_ProgramPopBest(frontier) {
+	local value = frontier[0];
+	local last = frontier[frontier.len() - 1];
+	frontier.remove(frontier.len() - 1);
+	if (frontier.len() == 0) return value;
+	frontier[0] = last;
+	local index = 0;
+	local heap_guard = 0;
+	while (index < frontier.len() && heap_guard < 64) {
+		heap_guard++;
+		local left = index * 2 + 1;
+		if (left >= frontier.len()) break;
+		local right = left + 1;
+		local best = left;
+		if (right < frontier.len() && D4_ProgramNodeBefore(frontier[right], frontier[left])) best = right;
+		if (!D4_ProgramNodeBefore(frontier[best], frontier[index])) break;
+		local swap = frontier[index];
+		frontier[index] = frontier[best];
+		frontier[best] = swap;
+		index = best;
+	}
 	return value;
 }
 
@@ -961,7 +1018,11 @@ function D4_VerifyProgramTopology(program, company_id) {
 		if (!trunks.ok) {
 			foreach (f3 in trunks.failures) failures.append(f3);
 		}
-		return { ok = failures.len() == 0, failures = failures, source = source, destination = destination, trunks = trunks };
+		local reachability = D4_VerifyThroughHubRoroReachability(program.ops, program.topology);
+		if (!reachability.ok) {
+			foreach (f4 in reachability.failures) failures.append(f4);
+		}
+		return { ok = failures.len() == 0, failures = failures, source = source, destination = destination, trunks = trunks, reachability = reachability };
 	}
 
 	/* A route is not topologically complete merely because its stations and
@@ -1141,4 +1202,117 @@ function D4_VerifyProgramPathConnections(path, entry_point, exit_point) {
 		if (!GSRail.AreTilesConnected(D4_ToTile(prev), D4_ToTile(path[i]), D4_ToTile(next))) return false;
 	}
 	return true;
+}
+
+/* Assemble a directed reachability graph purely from the emitted rail_connection
+ * primitives and prove that ONE commonInbound tile reaches every platform_front,
+ * every platform_rear reaches ONE commonRearMerge, and the loop reaches the
+ * shared commonOutbound. Rejects any regression to per-platform trunks even
+ * when the individual paths and headings look right in isolation. */
+function D4_ThroughHubRoroReachability(ops, topology) {
+	local outgoing = {};
+	local prefix_source = "rail.source.";
+	local prefix_dest = "rail.destination.";
+	foreach (op in ops) {
+		if (!D4_IsTable(op) || op.kind != "rail_connection" || !D4_Has(op, "op_id")) continue;
+		local id = op.op_id;
+		local source_match = id.len() >= prefix_source.len() && id.slice(0, prefix_source.len()) == prefix_source;
+		local destination_match = id.len() >= prefix_dest.len() && id.slice(0, prefix_dest.len()) == prefix_dest;
+		if (!source_match && !destination_match) continue;
+		if (!D4_Has(op, "prev_point") || !D4_Has(op, "point") || !D4_Has(op, "next_point")) continue;
+		local arc = D4_PointKey(op.prev_point) + ">" + D4_PointKey(op.point);
+		local succ = D4_PointKey(op.point) + ">" + D4_PointKey(op.next_point);
+		if (!(arc in outgoing)) outgoing[arc] <- {};
+		outgoing[arc][succ] <- true;
+	}
+	local platform_forward = {};
+	foreach (endpoint in [topology.source, topology.destination]) {
+		if (!D4_IsTable(endpoint) || !D4_Has(endpoint, "entries") || !D4_Has(endpoint, "exits")) continue;
+		for (local i = 0; i < endpoint.entries.len(); i++) {
+			local entry = endpoint.entries[i];
+			local exitp = endpoint.exits[i];
+			if (!D4_IsTable(entry) || !D4_IsTable(exitp) || !D4_Has(entry, "entry") || !D4_Has(entry, "platform") || !D4_Has(exitp, "platform") || !D4_Has(exitp, "exit")) continue;
+			local forward = D4_DirectionBetween(entry.entry, entry.platform);
+			if (forward < 0 || D4_DirectionBetween(exitp.platform, exitp.exit) != forward) continue;
+			local a = entry.entry;
+			local b = entry.platform;
+			local station_guard = 0;
+			while (D4_PointKey(b) != D4_PointKey(exitp.platform) && station_guard < 64) {
+				station_guard++;
+				local next = D4_Offset(b, forward, 1);
+				local arc = D4_PointKey(a) + ">" + D4_PointKey(b);
+				local succ = D4_PointKey(b) + ">" + D4_PointKey(next);
+				if (!(arc in outgoing)) outgoing[arc] <- {};
+				outgoing[arc][succ] <- true;
+				a = b;
+				b = next;
+			}
+			if (D4_PointKey(b) == D4_PointKey(exitp.platform)) {
+				local rear_arc = D4_PointKey(a) + ">" + D4_PointKey(b);
+				local rear_succ = D4_PointKey(b) + ">" + D4_PointKey(exitp.exit);
+				if (!(rear_arc in outgoing)) outgoing[rear_arc] <- {};
+				outgoing[rear_arc][rear_succ] <- true;
+			}
+			platform_forward[D4_PointKey(entry.platform)] <- forward;
+		}
+	}
+	return { outgoing = outgoing, platform_forward = platform_forward };
+}
+
+function D4_ForwardReachTiles(graph, start_arc) {
+	local visited_arcs = {};
+	visited_arcs[start_arc] <- true;
+	local queue = [start_arc];
+	local visited_tiles = {};
+	local head = start_arc.find(">");
+	if (head != null) visited_tiles[start_arc.slice(head + 1)] <- true;
+	local guard = 0;
+	while (queue.len() > 0 && guard < 4096) {
+		guard++;
+		local arc = queue[0];
+		queue.remove(0);
+		if (!(arc in graph.outgoing)) continue;
+		foreach (succ, _ in graph.outgoing[arc]) {
+			if (succ in visited_arcs) continue;
+			visited_arcs[succ] <- true;
+			local sep = succ.find(">");
+			if (sep != null) visited_tiles[succ.slice(sep + 1)] <- true;
+			queue.append(succ);
+		}
+	}
+	return visited_tiles;
+}
+
+function D4_VerifyThroughHubRoroReachability(ops, topology) {
+	local failures = [];
+	if (!D4_IsTable(topology) || !D4_Has(topology, "source") || !D4_Has(topology, "destination")) return { ok = false, failures = [{ reason = "reachability_topology_missing" }] };
+	local graph = D4_ThroughHubRoroReachability(ops, topology);
+	foreach (endpoint_pair in [{ endpoint = topology.source, side = "source" }, { endpoint = topology.destination, side = "destination" }]) {
+		local endpoint = endpoint_pair.endpoint;
+		local side = endpoint_pair.side;
+		if (!D4_IsTable(endpoint) || !D4_Has(endpoint, "common_inbound") || !D4_Has(endpoint, "common_rear_merge") || !D4_Has(endpoint, "common_outbound") || !D4_Has(endpoint, "fan_backbone") || !D4_IsArray(endpoint.fan_backbone) || endpoint.fan_backbone.len() < 2 || !D4_Has(endpoint, "loop_path") || !D4_IsArray(endpoint.loop_path) || endpoint.loop_path.len() < 2) {
+			failures.append({ reason = "reachability_endpoint_manifest_missing", side = side });
+			continue;
+		}
+		local inbound_arc = D4_PointKey(endpoint.common_inbound) + ">" + D4_PointKey(endpoint.fan_backbone[1]);
+		local reached = D4_ForwardReachTiles(graph, inbound_arc);
+		foreach (entry in endpoint.entries) {
+			if (!D4_Has(entry, "platform")) continue;
+			local pkey = D4_PointKey(entry.platform);
+			if (!(pkey in reached)) failures.append({ reason = "reachability_platform_front_unreachable", side = side, point = entry.platform });
+		}
+		foreach (exitp in endpoint.exits) {
+			if (!D4_Has(exitp, "platform")) continue;
+			local rear = exitp.platform;
+			local forward = D4_DirectionBetween(rear, exitp.exit);
+			if (forward < 0) { failures.append({ reason = "reachability_platform_axis_invalid", side = side, point = rear }); continue; }
+			local rear_arc = D4_PointKey(D4_Offset(rear, D4_RotateDir(forward, 2), 1)) + ">" + D4_PointKey(rear);
+			local from_rear = D4_ForwardReachTiles(graph, rear_arc);
+			if (!(D4_PointKey(endpoint.common_rear_merge) in from_rear)) failures.append({ reason = "reachability_platform_rear_unreachable", side = side, point = rear });
+		}
+		local loop_arc = D4_PointKey(endpoint.common_rear_merge) + ">" + D4_PointKey(endpoint.loop_path[1]);
+		local loop_reached = D4_ForwardReachTiles(graph, loop_arc);
+		if (!(D4_PointKey(endpoint.common_outbound) in loop_reached)) failures.append({ reason = "reachability_common_outbound_unreachable", side = side });
+	}
+	return { ok = failures.len() == 0, failures = failures };
 }

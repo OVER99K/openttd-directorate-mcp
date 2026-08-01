@@ -2,44 +2,65 @@ class DirectorateM4RouteRegistry {
 	routes = null;
 	order = null;
 	alerts = null;
+	deferred_routes = null;
+	deferred_order = null;
+	deferred_alerts = null;
 
 	constructor() {
 		this.routes = {};
 		this.order = [];
 		this.alerts = [];
+		this.deferred_routes = {};
+		this.deferred_order = [];
+		this.deferred_alerts = [];
 	}
 
 	function Save() {
-		return { routes = this.routes, order = this.order, alerts = this.alerts };
+		if (!this.HasDeferred()) return { routes = this.routes, order = this.order, alerts = this.alerts };
+		local saved_routes = {};
+		local saved_order = [];
+		foreach (id in this.deferred_order) { if (id in this.deferred_routes) { saved_routes[id] <- this.deferred_routes[id]; saved_order.append(id); } }
+		foreach (id in this.order) { if (id in this.routes) { saved_routes[id] <- this.routes[id]; saved_order.append(id); } }
+		local saved_alerts = [];
+		foreach (alert in this.deferred_alerts) saved_alerts.append(alert);
+		foreach (alert in this.alerts) saved_alerts.append(alert);
+		return { routes = saved_routes, order = saved_order, alerts = saved_alerts };
 	}
 
-	function Load(data) {
-		if (!D4_IsTable(data)) {
-			this.routes = {};
-			this.order = [];
-			this.alerts = [];
+	function Load(data) { this.BeginLoad(data); }
+
+	function BeginLoad(data) {
+		this.routes = {};
+		this.order = [];
+		this.alerts = [];
+		this.deferred_routes = {};
+		this.deferred_order = [];
+		this.deferred_alerts = [];
+		if (!D4_IsTable(data) || !D4_Has(data, "routes") || !D4_IsTable(data.routes) || !D4_Has(data, "order") || !D4_IsArray(data.order) || data.order.len() > DIRECTORATE_M4_MAX_ROUTES) return;
+		this.deferred_routes = data.routes;
+		this.deferred_order = data.order;
+		if (D4_Has(data, "alerts") && D4_IsArray(data.alerts) && data.alerts.len() <= 256) this.deferred_alerts = data.alerts;
+	}
+
+	function HydrateOne() {
+		if (this.deferred_order.len() > 0) {
+			local id = this.deferred_order.pop();
+			if (!(id in this.deferred_routes)) return;
+			local route = this.deferred_routes[id];
+			delete this.deferred_routes[id];
+			if (typeof id != "string" || id.len() < 1 || id.len() > 128 || id in this.routes || !this.IsRouteSafe(route)) return;
+			this.routes[id] <- route;
+			this.order.insert(0, id);
 			return;
 		}
-		local loaded = {};
-		local loaded_order = [];
-		if (D4_Has(data, "order") && D4_IsArray(data.order)) {
-			for (local i = 0; i < data.order.len() && loaded_order.len() < DIRECTORATE_M4_MAX_ROUTES; i++) {
-				local id = data.order[i];
-				if (typeof id != "string" || id.len() < 1 || id.len() > 128 || id in loaded || !(id in data.routes)) continue;
-				local route = data.routes[id];
-				if (!this.IsRouteSafe(route)) continue;
-				loaded[id] <- route;
-				loaded_order.append(id);
-			}
+		if (this.deferred_alerts.len() > 0) {
+			local alert = this.deferred_alerts.pop();
+			if (D4_IsTable(alert)) this.alerts.insert(0, alert);
 		}
-		this.routes = loaded;
-		this.order = loaded_order;
-		this.alerts = [];
-		if (D4_Has(data, "alerts") && D4_IsArray(data.alerts)) {
-			for (local i = 0; i < data.alerts.len() && this.alerts.len() < 256; i++) {
-				if (D4_IsTable(data.alerts[i])) this.alerts.append(data.alerts[i]);
-			}
-		}
+	}
+
+	function HasDeferred() {
+		return this.deferred_order.len() > 0 || this.deferred_alerts.len() > 0;
 	}
 
 	function Create(route_id, company_id, plan_id, source_station_tile, destination_station_tile, source_industry_id, destination_industry_id, cargo_type) {
