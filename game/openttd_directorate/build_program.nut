@@ -142,13 +142,21 @@ function D4_CompileThroughHubRoroProgram(plan, source_station, destination_stati
 	local dest_to_source = D4_DominantDirection(dest_out, source_in);
 	if (source_manifest.manifest.loop_exit_heading != source_to_dest) return { ok = false, error = D4_Error("through_hub_source_exit_heading_mismatch", D4_DirName(source_manifest.manifest.loop_exit_heading) + ":" + D4_DirName(source_to_dest)) };
 	if (dest_manifest.manifest.loop_exit_heading != dest_to_source) return { ok = false, error = D4_Error("through_hub_destination_exit_heading_mismatch", D4_DirName(dest_manifest.manifest.loop_exit_heading) + ":" + D4_DirName(dest_to_source)) };
-	local outbound = D4_BuildLegalCenterline(source_out, dest_in, plan.company_id, plan.policy, source_manifest.manifest.loop_exit_heading, dest_manifest.manifest.fan_entry_heading, 4, 50);
+	/* A parallel offset lane cannot survive a short corrective wiggle: the
+	 * inside miter folds back onto the centerline. Keep at least three tiles
+	 * between 45-degree transitions so paired trunks use deliberate sloped
+	 * curves rather than sharp S-bends. */
+	local outbound = D4_BuildLegalCenterline(source_out, dest_in, plan.company_id, plan.policy, source_manifest.manifest.loop_exit_heading, dest_manifest.manifest.fan_entry_heading, 4, 50, 3);
 	if (!outbound.ok) return outbound;
 	local returned = null;
 	local lane_diagnostics = "";
 	foreach (side_turns in [1, 3]) {
 		local candidate = D4_DeriveProgramLanes(outbound.path, side_turns);
-		if (!candidate.ok) { lane_diagnostics += "side=" + side_turns + ":derive_failed;"; continue; }
+		if (!candidate.ok) {
+			local candidate_error = D4_Has(candidate, "error") && D4_IsTable(candidate.error) ? candidate.error : null;
+			lane_diagnostics += "side=" + side_turns + ":derive_failed:" + (candidate_error != null && D4_Has(candidate_error, "code") ? candidate_error.code : "unknown") + ":" + (candidate_error != null && D4_Has(candidate_error, "detail") ? candidate_error.detail : "") + ";";
+			continue;
+		}
 		local start_ok = D4_PointKey(candidate.return_lane[0]) == D4_PointKey(dest_out);
 		local end_ok = D4_PointKey(candidate.return_lane[candidate.return_lane.len() - 1]) == D4_PointKey(source_in);
 		local start_heading = D4_DirectionBetween(candidate.return_lane[0], candidate.return_lane[1]);
@@ -552,16 +560,81 @@ function D4_StationRectOperation(op_id, blueprint, destination_station) {
 	return { ok = true, op = { op_id = op_id, kind = "station_rect", tile = D4_ToTile(origin), point = origin, end_tile = D4_ToTile(endp), end_point = endp, direction = direction, num_platforms = num_platforms, platform_length = platform_length, destination_station = destination_station } };
 }
 
-function D4_BuildLegalCenterline(start, goal, company_id, policy, required_start_dir = -1, required_goal_dir = -1, max_turns = -1, turn_cost_override = -1) {
+function D4_BuildTwoTurnCenterline(start, goal, company_id, heading, min_run) {
+	local horizontal = heading == DIR_NE || heading == DIR_SW;
+	local forward_delta = horizontal ? goal.x - start.x : goal.y - start.y;
+	local forward_step = heading == DIR_NE || heading == DIR_SE ? 1 : -1;
+	if (forward_delta * forward_step < min_run * 2) return { ok = false, error = D4_Error("dogleg_forward_span", forward_delta.tostring()) };
+	local cross_delta = horizontal ? goal.y - start.y : goal.x - start.x;
+	if (cross_delta != 0 && abs(cross_delta) < min_run) return { ok = false, error = D4_Error("dogleg_cross_span", cross_delta.tostring()) };
+	local forward_span = abs(forward_delta);
+	for (local first_run = min_run; first_run <= forward_span - min_run; first_run++) {
+		local path = [start];
+		local bend_value = (horizontal ? start.x : start.y) + forward_step * first_run;
+		if (!D4_AppendAxisTo(path, horizontal ? "x" : "y", bend_value)) continue;
+		if (!D4_AppendAxisTo(path, horizontal ? "y" : "x", horizontal ? goal.y : goal.x)) continue;
+		if (!D4_AppendAxisTo(path, horizontal ? "x" : "y", horizontal ? goal.x : goal.y)) continue;
+		if (D4_ValidateCenterlineCandidate(path, company_id, heading)) return { ok = true, path = path };
+	}
+	return { ok = false, error = D4_Error("dogleg_not_found", D4_PointKey(start) + "->" + D4_PointKey(goal)) };
+}
+
+function D4_AppendAxisTo(path, axis, target) {
+	if (!D4_IsArray(path) || path.len() < 1 || (axis != "x" && axis != "y")) return false;
+	local guard = 0;
+	while ((axis == "x" ? path[path.len() - 1].x : path[path.len() - 1].y) != target && guard < 384) {
+		local last = path[path.len() - 1];
+		local current = axis == "x" ? last.x : last.y;
+		local next = { x = last.x, y = last.y };
+		if (axis == "x") next.x = current < target ? current + 1 : current - 1;
+		else next.y = current < target ? current + 1 : current - 1;
+		D4_AppendPointIfNew(path, next);
+		guard++;
+	}
+	return (axis == "x" ? path[path.len() - 1].x : path[path.len() - 1].y) == target;
+}
+
+function D4_ValidateCenterlineCandidate(path, company_id, required_heading) {
+	if (!D4_IsArray(path) || path.len() < 2) return false;
+	if (D4_DirectionBetween(path[0], path[1]) != required_heading || D4_DirectionBetween(path[path.len() - 2], path[path.len() - 1]) != required_heading) return false;
+	for (local i = 0; i < path.len(); i++) {
+		local prev = i > 0 ? path[i - 1] : D4_Offset(path[i], D4_RotateDir(required_heading, 2), 1);
+		local next = i + 1 < path.len() ? path[i + 1] : D4_Offset(path[i], required_heading, 1);
+		if (!D4_IsPointOnMap(prev) || !D4_IsPointOnMap(next) || !D4_IsLegalPrimitive(prev, path[i], next) || !D4_TestProgramRailPiece(prev, path[i], next, company_id)) return false;
+	}
+	return true;
+}
+
+function D4_BuildLegalCenterline(start, goal, company_id, policy, required_start_dir = -1, required_goal_dir = -1, max_turns = -1, turn_cost_override = -1, min_turn_run = 0) {
+	/* Paired RoRo endpoints normally face the same cardinal direction. Test the
+	 * complete bounded family of two-turn doglegs first: unlike generic A*, this
+	 * guarantees enough straight approach at both ends for a parallel mitered
+	 * lane and costs only O(distance squared) test-mode rail probes. */
+	if (min_turn_run > 0 && required_start_dir >= 0 && required_start_dir == required_goal_dir) {
+		local dogleg = D4_BuildTwoTurnCenterline(start, goal, company_id, required_start_dir, min_turn_run);
+		if (dogleg.ok) return dogleg;
+		/* Reserve the final straight before generic search. The unconstrained A*
+		 * previously reached the goal with a one-tile corrective miter; routing to
+		 * a shifted approach point makes the required terminal run structural. */
+		local approach = D4_Offset(goal, D4_RotateDir(required_goal_dir, 2), min_turn_run);
+		if (!D4_IsPointOnMap(approach)) return dogleg;
+		local prefix = D4_BuildLegalCenterline(start, approach, company_id, policy, required_start_dir, required_goal_dir, max_turns, turn_cost_override, 0);
+		if (!prefix.ok) return prefix;
+		local combined = [];
+		foreach (point in prefix.path) D4_AppendPointIfNew(combined, point);
+		for (local tail = min_turn_run - 1; tail >= 0; tail--) D4_AppendPointIfNew(combined, D4_Offset(goal, D4_RotateDir(required_goal_dir, 2), tail));
+		if (!D4_ValidateCenterlineCandidate(combined, company_id, required_goal_dir)) return { ok = false, error = D4_Error("approach_extension_unbuildable", D4_PointKey(approach)) };
+		return { ok = true, path = combined };
+	}
 	/* Bounded clean-room A* adapted from the accepted M2 planner. Every
 	 * candidate primitive is tested by OpenTTD; no client-supplied path is
 	 * accepted and no map mutation occurs. */
 	local max_len = D4_ClampInt(D4_Has(policy, "path_limit") ? policy.path_limit : 160, 160, 8, 384);
-	local expansion_limit = D4_ClampInt(D4_Has(policy, "route_expansion_limit") ? policy.route_expansion_limit : 768, 768, 32, 2048);
+	local expansion_limit = D4_ClampInt(D4_Has(policy, "route_expansion_limit") ? policy.route_expansion_limit : 768, 768, 32, 4096);
 	local frontier_limit = D4_ClampInt(D4_Has(policy, "route_frontier_limit") ? policy.route_frontier_limit : 4096, 4096, 128, 8192);
 	local initial_dir = required_start_dir >= 0 ? required_start_dir : (abs(goal.x - start.x) >= abs(goal.y - start.y) ? (goal.x >= start.x ? DIR_NE : DIR_SW) : (goal.y >= start.y ? DIR_SE : DIR_NW));
 	local initial_h = (abs(goal.x - start.x) + abs(goal.y - start.y)) * 10;
-	local seed = { point = start, dir = initial_dir, g = 0, cost = initial_h, index = 0, parent_index = -1, steps = 0, turns = 0 };
+	local seed = { point = start, dir = initial_dir, g = 0, cost = initial_h, index = 0, parent_index = -1, steps = 0, turns = 0, run = 0 };
 	local route_turn_cost = turn_cost_override >= 0 ? D4_ClampInt(turn_cost_override, 5, 0, 100) : D4_ClampInt(D4_Has(policy, "route_turn_cost") ? policy.route_turn_cost : 5, 5, 0, 100);
 	local frontier = [seed];
 	local nodes = [seed];
@@ -573,20 +646,27 @@ function D4_BuildLegalCenterline(start, goal, company_id, policy, required_start
 	local rejected_endpoint = 0;
 	while (frontier.len() > 0 && expansions < expansion_limit) {
 		local node = D4_ProgramPopBest(frontier);
-		local key = D4_PointKey(node.point) + ":" + node.dir;
+		local track_run_state = min_turn_run > 0;
+		local run_state = min_turn_run > 0 && node.run < min_turn_run ? node.run : min_turn_run;
+		local key = D4_PointKey(node.point) + ":" + node.dir + (track_run_state ? ":" + run_state : "");
 		if (key in visited) continue;
 		visited[key] <- true;
 		expansions++;
-		if (node.point.x == goal.x && node.point.y == goal.y) return D4_ProgramReconstruct(nodes, node, max_len);
+		if (node.point.x == goal.x && node.point.y == goal.y && (min_turn_run <= 0 || node.run >= min_turn_run)) return D4_ProgramReconstruct(nodes, node, max_len);
 		if (node.steps >= max_len) continue;
 		local dirs = D4_ProgramDirections(node.dir, node.point, goal);
 		foreach (dir in dirs) {
+			local turning = dir != node.dir;
 			if (node.steps == 0 && required_start_dir >= 0 && dir != required_start_dir) continue;
 			if (dir == D4_RotateDir(node.dir, 2)) continue;
-			if (max_turns >= 0 && dir != node.dir && node.turns >= max_turns) continue;
+			if (max_turns >= 0 && turning && node.turns >= max_turns) continue;
+			if (turning && min_turn_run > 0 && node.run < min_turn_run) continue;
 			local next = D4_Offset(node.point, dir, 1);
 			if (!D4_IsPointOnMap(next) || !GSMap.IsValidTile(D4_ToTile(next))) { rejected_bounds++; continue; }
-			local nkey = D4_PointKey(next) + ":" + dir;
+			local child_turns = node.turns + (turning ? 1 : 0);
+			local child_run = turning ? 1 : node.run + 1;
+			local child_run_state = min_turn_run > 0 && child_run < min_turn_run ? child_run : min_turn_run;
+			local nkey = D4_PointKey(next) + ":" + dir + (track_run_state ? ":" + child_run_state : "");
 			if (nkey in visited) continue;
 			local prev = node.parent_index >= 0 ? nodes[node.parent_index].point : D4_Offset(node.point, D4_RotateDir(dir, 2), 1);
 			if (!D4_IsPointOnMap(prev) || !D4_IsLegalPrimitive(prev, node.point, next)) { rejected_primitive++; continue; }
@@ -604,7 +684,7 @@ function D4_BuildLegalCenterline(start, goal, company_id, policy, required_start
 			 * turning A* into a strongly greedy search that exhausts its bounded
 			 * frontier on otherwise trivial routes. */
 			local child_g = node.g + 10 + turn_cost;
-			local child = { point = next, dir = dir, g = child_g, cost = child_g + heuristic, index = nodes.len(), parent_index = node.index, steps = node.steps + 1, turns = node.turns + (turn_cost > 0 ? 1 : 0) };
+			local child = { point = next, dir = dir, g = child_g, cost = child_g + heuristic, index = nodes.len(), parent_index = node.index, steps = node.steps + 1, turns = child_turns, run = child_run };
 			nodes.append(child);
 			frontier.append(child);
 		}

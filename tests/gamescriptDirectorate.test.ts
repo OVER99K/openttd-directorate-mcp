@@ -276,7 +276,16 @@ test("Paired corridor connects through-hub endpoints through common fan and merg
   assert.match(program, /through_hub_source_exit_heading_mismatch/);
   assert.match(program, /through_hub_destination_exit_heading_mismatch/);
   assert.match(program, /source_manifest\.manifest\.loop_exit_heading/);
-  assert.match(program, /dest_manifest\.manifest\.fan_entry_heading/);
+  assert.match(program, /dest_manifest\.manifest\.fan_entry_heading, 4, 50, 3\)/);
+  assert.match(program, /at least three tiles/);
+  assert.match(program, /function D4_BuildTwoTurnCenterline/);
+  assert.match(program, /D4_BuildTwoTurnCenterline\(start, goal, company_id, required_start_dir, min_turn_run\)/);
+  assert.match(program, /local approach = D4_Offset\(goal, D4_RotateDir\(required_goal_dir, 2\), min_turn_run\)/);
+  assert.match(program, /local prefix = D4_BuildLegalCenterline\(start, approach, company_id, policy, required_start_dir, required_goal_dir, max_turns, turn_cost_override, 0\)/);
+  assert.match(program, /function D4_ValidateCenterlineCandidate/);
+  assert.match(program, /turning && min_turn_run > 0 && node\.run < min_turn_run/);
+  assert.match(program, /node\.point\.x == goal\.x && node\.point\.y == goal\.y && \(min_turn_run <= 0 \|\| node\.run >= min_turn_run\)/);
+  assert.match(program, /turns = child_turns, run = child_run/);
   assert.match(program, /D4_DepotOperation\(returned\.return_lane, occupied, true, "exit_to_next"\)/);
   assert.doesNotMatch(program, /local returned = D4_BuildLegalCenterline\(dest_out, source_in/);
   assert.match(program, /kind = "through_hub_roro"/);
