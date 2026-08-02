@@ -285,8 +285,9 @@ test("Paired corridor connects through-hub endpoints through common fan and merg
   assert.match(program, /through_hub_source_exit_heading_mismatch/);
   assert.match(program, /through_hub_destination_exit_heading_mismatch/);
   assert.match(program, /source_manifest\.manifest\.loop_exit_heading/);
-  assert.match(program, /dest_manifest\.manifest\.fan_entry_heading, 4, 50, 3, true\)/);
-  assert.match(program, /at least three tiles/);
+  assert.match(program, /dest_manifest\.manifest\.fan_entry_heading, 4, 50, turn_clearance, true\)/);
+  assert.match(program, /local turn_clearance = source_manifest\.manifest\.platform_length/);
+  assert.match(program, /maximum consist envelope/);
   assert.match(program, /function D4_HasBuildablePairedLane/);
   assert.match(program, /function D4_BuildTwoTurnCenterline/);
   assert.match(program, /D4_BuildTwoTurnCenterline\(start, goal, company_id, required_start_dir, min_turn_run, require_paired_lane\)/);

@@ -142,11 +142,12 @@ function D4_CompileThroughHubRoroProgram(plan, source_station, destination_stati
 	local dest_to_source = D4_DominantDirection(dest_out, source_in);
 	if (source_manifest.manifest.loop_exit_heading != source_to_dest) return { ok = false, error = D4_Error("through_hub_source_exit_heading_mismatch", D4_DirName(source_manifest.manifest.loop_exit_heading) + ":" + D4_DirName(source_to_dest)) };
 	if (dest_manifest.manifest.loop_exit_heading != dest_to_source) return { ok = false, error = D4_Error("through_hub_destination_exit_heading_mismatch", D4_DirName(dest_manifest.manifest.loop_exit_heading) + ":" + D4_DirName(dest_to_source)) };
-	/* A parallel offset lane cannot survive a short corrective wiggle: the
-	 * inside miter folds back onto the centerline. Keep at least three tiles
-	 * between 45-degree transitions so paired trunks use deliberate sloped
-	 * curves rather than sharp S-bends. */
-	local outbound = D4_BuildLegalCenterline(source_out, dest_in, plan.company_id, plan.policy, source_manifest.manifest.loop_exit_heading, dest_manifest.manifest.fan_entry_heading, 4, 50, 3, true);
+	/* The platform length is the maximum consist envelope for this route. Keep
+	 * every pair of mainline 45-degree transitions at least that far apart so a
+	 * full-length train cannot occupy both curve primitives simultaneously. */
+	local turn_clearance = source_manifest.manifest.platform_length;
+	if (dest_manifest.manifest.platform_length > turn_clearance) turn_clearance = dest_manifest.manifest.platform_length;
+	local outbound = D4_BuildLegalCenterline(source_out, dest_in, plan.company_id, plan.policy, source_manifest.manifest.loop_exit_heading, dest_manifest.manifest.fan_entry_heading, 4, 50, turn_clearance, true);
 	if (!outbound.ok) return outbound;
 	local returned = null;
 	local lane_diagnostics = "";
@@ -270,6 +271,7 @@ function D4_AppendThroughHubEndpoint(ops, prefix, blueprint, common_inbound, com
 			loop_exit_heading = layout.loop_exit_heading,
 			fan_entry_heading = layout.fan_entry_heading,
 			platform_count = platform_count,
+			platform_length = layout.platform_length,
 			entries = entries,
 			exits = exits,
 		},

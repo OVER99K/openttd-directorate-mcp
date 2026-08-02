@@ -261,6 +261,7 @@ test("Squirrel derivation mirrors TypeScript backbone/join geometry (no divergen
   assert.match(squirrel, /if \(m == platform_count - 1\) D4_AppendPointIfNew\(merge_backbone, merge_join\[m\]\);/);
   assert.match(squirrel, /D4_AppendPointIfNew\(merge_backbone, common_rear_merge\);/);
   assert.match(squirrel, /local loop_path = \[common_rear_merge, D4_RotateBlueprintPoint\(blueprint, \{ x = platform_length \+ platform_count, y = -2 \}\)\];/);
+  assert.match(squirrel, /D4_BuildLegalCenterline\(source_out, dest_in, plan\.company_id, plan\.policy, source_manifest\.manifest\.loop_exit_heading, dest_manifest\.manifest\.fan_entry_heading, 4, 50, turn_clearance, true\)/);
 });
 
 test("through-hub endpoint manifest emits per-row entries whose paths originate at ONE commonInbound", () => {
