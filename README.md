@@ -84,6 +84,17 @@ The stable GameScript package lives at `game/openttd_directorate` and exposes:
 
 Internal `D4_*` and `DIRECTORATE_M4_*` identifiers are intentionally retained as implementation-level lineage markers.
 
+## Join the live nicai.space server
+
+The production Directorate is running on a persistent public OpenTTD world:
+
+- **Server browser name:** `nicai.space Nicolettes World`
+- **Direct address:** `nicai.space:3979`
+- **OpenTTD version:** 15.3
+- **GameScript:** OpenTTD Directorate
+
+In OpenTTD, choose **Multiplayer → Add server**, enter `nicai.space:3979`, and connect. The server is also advertised in OpenTTD's public server browser. If all company slots are occupied, join as a spectator rather than creating or modifying infrastructure in another player's company. The `Nicolette Rail Directorate` company is the live autonomous demonstration; please do not alter it unless invited.
+
 ## Requirements
 
 - Node.js 20 or newer;
