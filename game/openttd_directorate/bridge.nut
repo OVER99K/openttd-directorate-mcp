@@ -131,7 +131,7 @@ class DirectorateM4Bridge {
 			local platform_length = null;
 			local truncated = false;
 			foreach (op in plan.build_program.ops) {
-				if (D4_IsTable(op) && D4_Has(op, "kind") && op.kind == "station" && D4_Has(op, "op_id") && op.op_id == "source_station" && D4_Has(op, "platform_length")) platform_length = op.platform_length;
+				if (D4_IsTable(op) && D4_Has(op, "kind") && op.kind == "station_rect" && D4_Has(op, "op_id") && op.op_id == "source_station" && D4_Has(op, "platform_length")) platform_length = op.platform_length;
 				if (!D4_IsTable(op) || !D4_Has(op, "kind") || op.kind != "rail_connection" || !D4_Has(op, "op_id") || typeof op.op_id != "string" || !D4_Has(op, "tile")) continue;
 				local target = null;
 				if (op.op_id.find("rail.outbound.") == 0) target = outbound;
