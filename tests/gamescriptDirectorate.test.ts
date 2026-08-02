@@ -153,10 +153,12 @@ test("Plan store owns the route registry and exposes observe/verify routes", () 
   assert.match(store, /this\.journal\.Replay\(op\)/);
 });
 
-test("Bridge dispatches verify and executes commission_route", () => {
+test("Bridge dispatches verify, commissioning, and bounded curve inspection", () => {
   const bridge = readFileSync(join(gameDir, "bridge.nut"), "utf8");
   assert.match(bridge, /op == "verify"/);
   assert.match(bridge, /payload\.command == "commission_route"/);
+  assert.match(bridge, /payload\.command == "inspect_plan_curves"/);
+  assert.match(bridge, /target\.len\(\) >= 256/);
   assert.match(bridge, /D4_CommissionRoute\(this\.store, this\.store\.registry,/);
   assert.match(bridge, /targets != 1/);
   assert.match(bridge, /this\.store\.Verify\(payload\.company_id, payload\.operation_id, level, true\)/);

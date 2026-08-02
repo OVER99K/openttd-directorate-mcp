@@ -122,6 +122,26 @@ class DirectorateM4Bridge {
 	function HandleExecute(payload) {
 		if (!("company_id" in payload) || typeof payload.company_id != "integer") return { ok = false, error = D4_Error("invalid_company", "") };
 		if (!("command" in payload) || typeof payload.command != "string") return { ok = false, error = D4_Error("invalid_command", "") };
+		if (payload.command == "inspect_plan_curves") {
+			if (!("params" in payload) || !D4_IsTable(payload.params) || !("plan_id" in payload.params) || typeof payload.params.plan_id != "string") return { ok = false, error = D4_Error("invalid_curve_inspection", "") };
+			local plan = this.store.GetPlan(payload.params.plan_id);
+			if (plan == null || !D4_Has(plan, "build_program") || !D4_Has(plan.build_program, "ops")) return { ok = false, error = D4_Error("plan_not_found", payload.params.plan_id) };
+			local outbound = [];
+			local returned = [];
+			local platform_length = null;
+			local truncated = false;
+			foreach (op in plan.build_program.ops) {
+				if (D4_IsTable(op) && D4_Has(op, "kind") && op.kind == "station" && D4_Has(op, "op_id") && op.op_id == "source_station" && D4_Has(op, "platform_length")) platform_length = op.platform_length;
+				if (!D4_IsTable(op) || !D4_Has(op, "kind") || op.kind != "rail_connection" || !D4_Has(op, "op_id") || typeof op.op_id != "string" || !D4_Has(op, "tile")) continue;
+				local target = null;
+				if (op.op_id.find("rail.outbound.") == 0) target = outbound;
+				else if (op.op_id.find("rail.return.") == 0) target = returned;
+				if (target == null) continue;
+				if (target.len() >= 256) { truncated = true; continue; }
+				target.append(op.tile);
+			}
+			return { ok = true, payload = { plan_id = payload.params.plan_id, platform_length = platform_length, outbound = outbound, returned = returned, truncated = truncated } };
+		}
 		if (payload.command == "cancel_plan") {
 			if (!("params" in payload) || !D4_IsTable(payload.params) || !("plan_id" in payload.params) || !("revision" in payload.params)) return { ok = false, error = D4_Error("invalid_cancel", "") };
 			return this.store.Cancel(payload.company_id, payload.params.plan_id, payload.params.revision);
