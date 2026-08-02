@@ -283,6 +283,9 @@ number_towns = 0
 terrain_type = 0
 quantity_sea_lakes = 0
 
+[pf]
+forbid_90_deg = true
+
 [gui]
 autosave_interval = 0
 `,
