@@ -148,6 +148,14 @@ function D4_CompileThroughHubRoroProgram(plan, source_station, destination_stati
 	local turn_clearance = source_manifest.manifest.platform_length;
 	if (dest_manifest.manifest.platform_length > turn_clearance) turn_clearance = dest_manifest.manifest.platform_length;
 	local outbound = D4_BuildLegalCenterline(source_out, dest_in, plan.company_id, plan.policy, source_manifest.manifest.loop_exit_heading, dest_manifest.manifest.fan_entry_heading, 4, 50, turn_clearance, true);
+	local curve_clearance_relaxed = false;
+	/* Terrain may make the full consist envelope impossible. Only then permit a
+	 * short paired 45-left/45-right trajectory correction; three tiles is the
+	 * minimum at which the offset lane miters remain valid. */
+	if (!outbound.ok && turn_clearance > 3) {
+		outbound = D4_BuildLegalCenterline(source_out, dest_in, plan.company_id, plan.policy, source_manifest.manifest.loop_exit_heading, dest_manifest.manifest.fan_entry_heading, 4, 50, 3, true);
+		curve_clearance_relaxed = outbound.ok;
+	}
 	if (!outbound.ok) return outbound;
 	local returned = null;
 	local lane_diagnostics = "";
@@ -212,6 +220,8 @@ function D4_CompileThroughHubRoroProgram(plan, source_station, destination_stati
 		destination = dest_manifest.manifest,
 		outbound = outbound.path,
 		return_lane = returned.return_lane,
+		curve_clearance_tiles = curve_clearance_relaxed ? 3 : turn_clearance,
+		curve_clearance_relaxed = curve_clearance_relaxed,
 		signals = D4_ProgramSignalManifest(ops),
 	};
 	/* Prove the emitted rail primitives collapse into a single-source fan and a
